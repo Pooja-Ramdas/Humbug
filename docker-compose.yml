@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+
+  # ── Backend (FastAPI + uvicorn) ──────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: humbug-backend
+    restart: unless-stopped
+    environment:
+      - DB_PATH=/app/data/data.db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persist the SQLite DB across restarts so injected faults/tickets survive
+      # a reviewer stopping and restarting the stack.
+      - humbug-data:/app/data
+    ports:
+      # Exposed directly for local dev (curl localhost:8000/health)
+      # Not needed in production behind nginx, but harmless.
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Frontend (nginx serving static files + API proxy) ────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: humbug-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  humbug-data:
+    driver: local

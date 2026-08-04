@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Humbug — Operator Console</title>
+
+  <!-- IBM Plex Mono via Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="css/theme.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     APP SHELL
+     ═══════════════════════════════════════════════════════════ -->
+<div id="app">
+
+  <!-- HEADER ─────────────────────────────────────────────── -->
+  <header id="app-header">
+    <div class="header-left">
+      <span class="logo-glyph">⬡</span>
+      <span class="logo-name">HUMBUG</span>
+      <span class="logo-sub">/ fault operations console</span>
+    </div>
+    <div class="header-center">
+      <div id="system-health" class="health-badge health-ok">
+        <span class="health-dot"></span>
+        <span class="health-label">LOADING…</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="header-stat">
+        <span class="stat-value" id="hdr-open-tickets">–</span>
+        <span class="stat-label">OPEN FAULTS</span>
+      </div>
+      <div class="header-stat">
+        <span class="stat-value" id="hdr-pole-count">–</span>
+        <span class="stat-label">POLES</span>
+      </div>
+      <div class="header-clock" id="app-clock">00:00:00</div>
+      <div class="poll-indicator" id="poll-indicator" title="Polling every 3s">
+        <span class="poll-dot"></span>
+        <span class="poll-label">LIVE · 3s</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN GRID ───────────────────────────────────────────── -->
+  <main id="main-grid">
+
+    <!-- MAP (dominant center) -->
+    <section id="map-panel">
+      <div id="map-container"></div>
+      <div id="map-legend">
+        <div class="legend-item"><span class="legend-dot dot-normal"></span>Energized</div>
+        <div class="legend-item"><span class="legend-dot dot-fault"></span>Fault</div>
+        <div class="legend-item"><span class="legend-dot dot-load-shedding"></span>Load shedding</div>
+        <div class="legend-item"><span class="legend-dot dot-unknown"></span>No device</div>
+        <div class="legend-item"><span class="legend-line line-span"></span>Known topology</div>
+        <div class="legend-item"><span class="legend-line line-inferred"></span>Inferred topology</div>
+      </div>
+    </section>
+
+    <!-- RIGHT COLUMN -->
+    <aside id="right-column">
+
+      <!-- FAULT SIMULATOR PANEL -->
+      <section id="simulator-panel" class="panel">
+        <div class="panel-header">
+          <span class="panel-title">FAULT SIMULATOR</span>
+          <button class="btn-icon" id="sim-collapse-btn" title="Collapse">▲</button>
+        </div>
+        <div id="simulator-body" class="panel-body">
+          <!-- rendered by simulator.js -->
+        </div>
+      </section>
+
+      <!-- ACTIVE TICKETS -->
+      <section id="tickets-panel" class="panel">
+        <div class="panel-header">
+          <span class="panel-title">ACTIVE TICKETS</span>
+          <span class="badge badge-count" id="tickets-badge">0</span>
+        </div>
+        <div id="tickets-list-body" class="panel-body scrollable">
+          <!-- rendered by tickets.js -->
+        </div>
+      </section>
+
+    </aside>
+  </main>
+
+</div><!-- /#app -->
+
+<!-- TICKET DETAIL DRAWER ────────────────────────────────── -->
+<div id="ticket-drawer" class="drawer drawer-closed">
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+  <div class="drawer-panel">
+    <div class="drawer-header">
+      <span class="drawer-title" id="drawer-title">Ticket Detail</span>
+      <button class="btn-icon" id="drawer-close-btn">✕</button>
+    </div>
+    <div class="drawer-body" id="drawer-body">
+      <!-- rendered by tickets.js -->
+    </div>
+  </div>
+</div>
+
+<!-- INJECT FAULT DIALOG ─────────────────────────────────── -->
+<div id="inject-dialog" class="dialog-overlay dialog-hidden">
+  <div class="dialog-box">
+    <div class="dialog-header">
+      <span class="dialog-title">INJECT FAULT</span>
+      <button class="btn-icon" id="inject-close-btn">✕</button>
+    </div>
+    <div class="dialog-body" id="inject-dialog-body">
+      <!-- rendered by simulator.js -->
+    </div>
+  </div>
+</div>
+
+<!-- TOAST ───────────────────────────────────────────────── -->
+<div id="toast-container"></div>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCRIPTS — React UMD + app modules (no build step)
+     ═══════════════════════════════════════════════════════ -->
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- React 18 UMD (development build for clarity; swap for .min in prod) -->
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+<!-- App modules — loaded in dependency order -->
+<script src="js/api.js"></script>
+<script src="js/map.js"></script>
+<script src="js/tickets.js"></script>
+<script src="js/simulator.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>

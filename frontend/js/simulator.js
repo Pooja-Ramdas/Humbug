@@ -317,17 +317,19 @@ window.HumbugSimulator = (() => {
         )
       ),
 
-      // Inject dialog (portal-style — just a separate DOM element)
+      // Inject dialog — rendered into the stable dialog root (created once in render())
       dialogOpen && (() => {
-        const el = document.getElementById('inject-dialog-body');
         const overlay = document.getElementById('inject-dialog');
-        if (el && overlay) {
-          overlay.classList.remove('dialog-hidden');
-          ReactDOM.createRoot(el).render(
+        const dialogRoot = window.HumbugSimulator && window.HumbugSimulator.getDialogRoot
+          ? window.HumbugSimulator.getDialogRoot()
+          : null;
+        if (overlay) overlay.classList.remove('dialog-hidden');
+        if (dialogRoot) {
+          dialogRoot.render(
             h(InjectDialog, {
               poles, transformers, feeders,
               onClose: () => {
-                overlay.classList.add('dialog-hidden');
+                if (overlay) overlay.classList.add('dialog-hidden');
                 setDialogOpen(false);
               },
               onSubmit: handleInject,
@@ -346,13 +348,24 @@ window.HumbugSimulator = (() => {
 
   // ─── Public API ──────────────────────────────────────────────────────
   let _root = null;
+  let _dialogRoot = null;  // Stable root for the inject dialog — never recreated
 
   function render(containerId) {
     const el = document.getElementById(containerId);
     if (!el) return;
     _root = ReactDOM.createRoot(el);
     _root.render(h(SimulatorPanel));
+
+    // Pre-create the dialog root once so we can call .render() on it
+    // without leaking new roots on every dialog open.
+    const dialogEl = document.getElementById('inject-dialog-body');
+    if (dialogEl) {
+      _dialogRoot = ReactDOM.createRoot(dialogEl);
+    }
   }
 
-  return { render };
+  // Expose so SimulatorPanel can reuse the stable dialog root
+  function getDialogRoot() { return _dialogRoot; }
+
+  return { render, getDialogRoot };
 })();

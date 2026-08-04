@@ -6,8 +6,9 @@ WORKDIR /app
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend source
-COPY backend/app.py /app/backend/app.py
+# Copy backend source (app.py + __init__.py for package resolution)
+COPY backend/app.py      /app/backend/app.py
+COPY backend/__init__.py /app/backend/__init__.py
 
 # Copy repo-root Python modules that backend/app.py imports
 COPY detection.py      /app/detection.py

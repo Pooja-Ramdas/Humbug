@@ -357,6 +357,20 @@ def run_full_detection(con: sqlite3.Connection):
                  meta["lat"], meta["lon"], meta["pincode"], feeder_id, now, t_id)
             )
 
+    # detection.py sets status='verified' but doesn't set verified_at.
+    # Stamp it here for any newly-verified tickets.
+    now2 = time.time()
+    cur.execute(
+        "UPDATE tickets SET verified_at=?, updated_at=? "
+        "WHERE status='verified' AND verified_at IS NULL",
+        (now2, now2)
+    )
+    # Auto-close tickets that have been verified
+    cur.execute(
+        "UPDATE tickets SET status='closed', closed_at=?, updated_at=? "
+        "WHERE status='verified' AND verified_at IS NOT NULL AND closed_at IS NULL",
+        (now2, now2)
+    )
     con.commit()
     return statuses
 

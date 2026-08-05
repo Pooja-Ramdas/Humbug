@@ -117,6 +117,7 @@ def init_runtime_tables(con: sqlite3.Connection):
             target_id  TEXT NOT NULL,
             start_ts   REAL NOT NULL,
             end_ts     REAL NOT NULL,
+            status     TEXT NOT NULL DEFAULT 'active',
             reason     TEXT
         );
 
@@ -128,31 +129,66 @@ def init_runtime_tables(con: sqlite3.Connection):
             restored    INTEGER DEFAULT 0
         );
     """)
+    try:
+        cur.execute("ALTER TABLE scheduled_outages ADD COLUMN status TEXT DEFAULT 'active'")
+    except sqlite3.OperationalError:
+        pass
     con.commit()
 
 
 def seed_heartbeats(con: sqlite3.Connection):
     """
-    Seed initial device_last_seen entries for all devices so that poles show
+    Seed or refresh device_last_seen entries for all devices so that poles show
     as 'normal' on first load rather than all appearing stale/fault.
-    Only runs if device_last_seen is empty.
+    Updates all healthy devices to recently seen, while preserving staleness
+    for devices that have active, unrestored faults.
     """
     cur = con.cursor()
-    count = cur.execute("SELECT COUNT(*) FROM device_last_seen").fetchone()[0]
-    if count > 0:
-        return  # already seeded
-
     now = time.time()
+
+    # 1. Identify all devices currently affected by active (unrestored) faults
+    try:
+        active = cur.execute("SELECT fault_type, target_id FROM active_faults WHERE restored = 0").fetchall()
+    except sqlite3.OperationalError:
+        # active_faults table might not exist yet if called too early, but init_runtime_tables ran first
+        active = []
+
+    stale_devices = set()
+    for row in active:
+        # Use our telemetry simulator's helper to get affected poles
+        affected = sim.get_poles_for_target(con, row["fault_type"], row["target_id"], _graph)
+        for pole in affected:
+            if pole.get("device_id"):
+                stale_devices.add(pole["device_id"])
+
     rows = cur.execute(
-        "SELECT device_id FROM pole_registry WHERE device_id IS NOT NULL"
+        "SELECT device_id, pole_id FROM pole_registry WHERE device_id IS NOT NULL"
     ).fetchall()
-    cur.executemany(
-        "INSERT OR IGNORE INTO device_last_seen (device_id, ts, pole_id) "
-        "SELECT ?, ?, pole_id FROM pole_registry WHERE device_id = ?",
-        [(r[0], now - 60, r[0]) for r in rows]  # 60s ago = recently seen
-    )
+
+    # 2. Update or insert device_last_seen
+    for r in rows:
+        device_id = r["device_id"]
+        pole_id = r["pole_id"]
+        if device_id in stale_devices:
+            # Stale device under active fault: insert as stale if not already exists,
+            # or leave it alone if it exists (to preserve the exact simulated fault timestamp).
+            exists = cur.execute("SELECT 1 FROM device_last_seen WHERE device_id = ?", (device_id,)).fetchone()
+            if not exists:
+                stale_ts = now - sim.STALE_THRESHOLD_S - 60
+                cur.execute(
+                    "INSERT INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?)",
+                    (device_id, stale_ts, pole_id)
+                )
+        else:
+            # Healthy device: set to now - 60 (or update if already exists)
+            cur.execute(
+                "INSERT OR REPLACE INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?)",
+                (device_id, now - 60, pole_id)
+            )
+
     con.commit()
-    log.info(f"Seeded {len(rows)} device heartbeats")
+    log.info("Synchronized device heartbeats on startup.")
+
 
 # ---------------------------------------------------------------------------
 # Topology inference helpers (for the 60% of DTs with no recorded topology)
@@ -330,19 +366,39 @@ def run_full_detection(con: sqlite3.Connection):
         dark_poles = affected_csv.split(",") if affected_csv else []
         meta = compute_ticket_metadata(con, dt_id, dark_poles)
 
-        # Check if this DT/feeder is under a scheduled outage right now
+        # Check if this DT/feeder is under a scheduled outage, or if all dark poles are suppressed
         feeder_row = cur.execute(
             "SELECT feeder_id FROM transformer_registry WHERE dt_id=?", (dt_id,)
         ).fetchone()
         feeder_id = feeder_row["feeder_id"] if feeder_row else None
 
-        is_scheduled = cur.execute(
+        is_dt_or_feeder_scheduled = cur.execute(
             "SELECT id FROM scheduled_outages WHERE start_ts <= ? AND end_ts >= ? "
             "AND (target_id=? OR target_id=?)",
             (now, now, dt_id, feeder_id or "")
         ).fetchone()
 
-        if is_scheduled:
+        all_suppressed = False
+        if is_dt_or_feeder_scheduled:
+            all_suppressed = True
+        elif dark_poles:
+            all_suppressed = True
+            for pid in dark_poles:
+                pole_row = cur.execute(
+                    "SELECT dt_id, feeder_id FROM pole_registry WHERE pole_id=?", (pid,)
+                ).fetchone()
+                p_dt_id = pole_row["dt_id"] if pole_row else None
+                p_feeder_id = pole_row["feeder_id"] if pole_row else None
+                is_pol_sched = cur.execute(
+                    "SELECT id FROM scheduled_outages WHERE status='active' AND start_ts <= ? AND end_ts >= ? "
+                    "AND (target_id=? OR target_id=? OR target_id=?)",
+                    (now, now, pid, p_dt_id or "", p_feeder_id or "")
+                ).fetchone()
+                if not is_pol_sched:
+                    all_suppressed = False
+                    break
+
+        if all_suppressed:
             # Suppress: mark as load_shedding (not a real fault ticket)
             cur.execute(
                 "UPDATE tickets SET status='closed', confidence=0.1, "
@@ -365,11 +421,11 @@ def run_full_detection(con: sqlite3.Connection):
         "WHERE status='verified' AND verified_at IS NULL",
         (now2, now2)
     )
-    # Auto-close tickets that have been verified
+    # Auto-close tickets that have been verified after a 10-second grace period
     cur.execute(
         "UPDATE tickets SET status='closed', closed_at=?, updated_at=? "
-        "WHERE status='verified' AND verified_at IS NOT NULL AND closed_at IS NULL",
-        (now2, now2)
+        "WHERE status='verified' AND verified_at IS NOT NULL AND (? - verified_at) >= 10 AND closed_at IS NULL",
+        (now2, now2, now2)
     )
     con.commit()
     return statuses
@@ -383,14 +439,15 @@ def run_full_detection(con: sqlite3.Connection):
 async def lifespan(app: FastAPI):
     global _graph
     log.info(f"Starting Humbug backend. DB: {DB_PATH}")
+    _graph = build_graph(DB_PATH)
+    log.info(f"Graph loaded: {_graph.number_of_nodes()} nodes, {_graph.number_of_edges()} edges")
     con = get_db()
     init_runtime_tables(con)
     seed_heartbeats(con)
     con.close()
-    _graph = build_graph(DB_PATH)
-    log.info(f"Graph loaded: {_graph.number_of_nodes()} nodes, {_graph.number_of_edges()} edges")
     yield
     log.info("Humbug backend shutting down")
+
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +491,12 @@ class SimulateFaultBody(BaseModel):
 class SimulateRestoreBody(BaseModel):
     type: str
     target_id: str
+
+
+class SimulateLoadShedBody(BaseModel):
+    target_id: str
+    scope: str
+    duration_minutes: int
 
 
 class SimulateNoiseBody(BaseModel):
@@ -615,13 +678,13 @@ def get_poles():
             pid = p["pole_id"]
             raw_status = statuses.get(pid, "unknown")
 
-            # Override: if pole is under a scheduled outage, show load_shedding
+            # Override: if pole is under a scheduled outage, show load_shed
             final_status = raw_status
-            if raw_status == "fault":
+            if raw_status in ("fault", "load_shed"):
                 dt_id = p["dt_id"]
                 feeder_id = p["feeder_id"]
-                if ("feeder", feeder_id) in outage_targets or ("dt", dt_id) in outage_targets:
-                    final_status = "load_shedding"
+                if ("feeder", feeder_id) in outage_targets or ("dt", dt_id) in outage_targets or ("pole", pid) in outage_targets:
+                    final_status = "load_shed"
 
             device_id = p["device_id"]
             last_seen = last_seen_map.get(device_id) if device_id else None
@@ -962,6 +1025,89 @@ def get_active_faults():
         con.close()
 
 
+@app.post("/api/simulate-load-shed")
+def simulate_load_shed(body: SimulateLoadShedBody):
+    con = get_db()
+    try:
+        outage_id = f"SO-SIM-{uuid.uuid4().hex[:8]}"
+        now = time.time()
+        start_ts = now
+        end_ts = now + body.duration_minutes * 60
+        
+        con.execute(
+            "INSERT INTO scheduled_outages (id, scope, target_id, start_ts, end_ts, status, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (outage_id, body.scope, body.target_id, start_ts, end_ts, "active", f"Load shedding ({body.duration_minutes} mins)")
+        )
+        
+        # Backdate affected devices so they appear dark
+        affected = sim.get_poles_for_target(con, body.scope, body.target_id, _graph)
+        stale_ts = now - sim.STALE_THRESHOLD_S - 10
+        for pole in affected:
+            d_id = pole.get("device_id")
+            p_id = pole.get("pole_id")
+            if d_id:
+                con.execute(
+                    "INSERT INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(device_id) DO UPDATE SET ts=?",
+                    (d_id, stale_ts, p_id, stale_ts)
+                )
+        con.commit()
+        
+        run_full_detection(con)
+        con.commit()
+        
+        return {"id": outage_id, "status": "active", "end_ts": end_ts}
+    finally:
+        con.close()
+
+
+@app.get("/api/active-load-shed")
+def get_active_load_shed():
+    con = get_db()
+    try:
+        now = time.time()
+        rows = con.execute(
+            "SELECT * FROM scheduled_outages WHERE status = 'active' AND start_ts <= ? AND end_ts >= ?",
+            (now, now)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+@app.post("/api/end-load-shed/{outage_id}")
+def end_load_shed(outage_id: str):
+    con = get_db()
+    try:
+        now = time.time()
+        con.execute(
+            "UPDATE scheduled_outages SET status = 'ended', end_ts = ? WHERE id = ?",
+            (now, outage_id)
+        )
+        
+        # Restore affected devices
+        outage = con.execute("SELECT scope, target_id FROM scheduled_outages WHERE id = ?", (outage_id,)).fetchone()
+        if outage:
+            scope, target_id = outage["scope"], outage["target_id"]
+            affected = sim.get_poles_for_target(con, scope, target_id, _graph)
+            for pole in affected:
+                d_id = pole.get("device_id")
+                p_id = pole.get("pole_id")
+                if d_id:
+                    con.execute(
+                        "INSERT OR REPLACE INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?)",
+                        (d_id, now, p_id)
+                      )
+            con.commit()
+            run_full_detection(con)
+        
+        con.commit()
+        return {"status": "ended"}
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Scheduled outages
 # ---------------------------------------------------------------------------
@@ -998,6 +1144,25 @@ def create_scheduled_outage(body: ScheduledOutageBody):
             "VALUES (?,?,?,?,?,?)",
             (outage_id, body.scope, body.target_id, body.start_ts, body.end_ts, body.reason)
         )
+        
+        # Simulating load shedding: backdate last_seen for affected devices if currently active
+        now = time.time()
+        if body.start_ts <= now <= body.end_ts:
+            affected = sim.get_poles_for_target(con, body.scope, body.target_id, _graph)
+            stale_ts = now - sim.STALE_THRESHOLD_S - 10
+            for pole in affected:
+                d_id = pole.get("device_id")
+                p_id = pole.get("pole_id")
+                if d_id:
+                    con.execute(
+                        "INSERT INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?) "
+                        "ON CONFLICT(device_id) DO UPDATE SET ts=?",
+                        (d_id, stale_ts, p_id, stale_ts)
+                    )
+            con.commit()
+            # Run detection pass immediately to process the suppression/ticket logic
+            run_full_detection(con)
+            
         con.commit()
         return {"id": outage_id, "status": "created"}
     finally:

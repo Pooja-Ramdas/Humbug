@@ -46,8 +46,12 @@ def _random_fw(device_id: str) -> str:
 
 
 def _ts_now_with_skew() -> float:
-    """Return current Unix timestamp with up to ±90s device clock skew."""
-    return time.time() + random.uniform(-90, 90)
+    """Return current Unix timestamp with device clock skew simulation.
+    Skew is -90s to +5s (clamped). Negative skew = late-arriving message
+    (realistic). Positive skew capped at +5s so restoration events at
+    now+10s are always definitively newer than fault events.
+    """
+    return time.time() + random.uniform(-90, 5)
 
 
 def _make_event(pole_id: str, device_id: str, event: str,
@@ -227,6 +231,10 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
     """
     Simulate fault repair. Sends boot + power_restored for all affected poles.
     Also refreshes device_last_seen to now (so stale detection clears).
+
+    Restoration events use real wall-clock time (no skew) so they always
+    post-date the fault's power_lost events regardless of device clock skew
+    at injection time. This ensures detection correctly resolves the ticket.
     """
     affected = get_poles_for_target(con, fault_type, target_id, graph)
     if not affected:
@@ -234,10 +242,16 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
 
     cur = con.cursor()
     messages_generated = 0
+    now = time.time()  # single real timestamp — no skew, always after fault events
 
     for pole in affected:
         device_id = pole.get("device_id")
         if not device_id:
+            continue
+
+        # Realistically imperfect restoration telemetry:
+        # 15% of restoration messages are lost in transit.
+        if random.random() > 0.85:
             continue
 
         fw = _random_fw(device_id)
@@ -248,8 +262,13 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
         ).fetchone()
         seq = (row[0] or 0) + 1
 
-        # boot event
-        boot_event = _make_event(pole_id, device_id, "boot", True, seq, fw)
+        # boot event — real timestamp + offset to guarantee newer than any skewed fault event
+        boot_event = {
+            "id": str(uuid.uuid4()), "pole_id": pole_id, "device_id": device_id,
+            "event": "boot", "energized": True, "ts": now + random.uniform(10.0, 12.0),
+            "seq": seq, "battery_mv": random.randint(3400, 3700),
+            "rssi": random.randint(-100, -65), "fw": fw, "received_at": now,
+        }
         cur.execute(
             "INSERT INTO telemetry (id, pole_id, device_id, event, energized, "
             "ts, seq, battery_mv, rssi, fw, received_at) VALUES "
@@ -257,8 +276,14 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
             boot_event
         )
 
-        # power_restored event
-        restored_event = _make_event(pole_id, device_id, "power_restored", True, seq + 1, fw)
+        # power_restored event — slightly after boot
+        restored_event = {
+            "id": str(uuid.uuid4()), "pole_id": pole_id, "device_id": device_id,
+            "event": "power_restored", "energized": True,
+            "ts": now + random.uniform(13.0, 15.0),
+            "seq": seq + 1, "battery_mv": random.randint(3400, 3700),
+            "rssi": random.randint(-100, -65), "fw": fw, "received_at": now,
+        }
         cur.execute(
             "INSERT INTO telemetry (id, pole_id, device_id, event, energized, "
             "ts, seq, battery_mv, rssi, fw, received_at) VALUES "
@@ -269,7 +294,7 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
         # Refresh last_seen to now so stale detection clears
         cur.execute(
             "INSERT OR REPLACE INTO device_last_seen (device_id, ts, pole_id) "
-            "VALUES (?, ?, ?)", (device_id, time.time(), pole_id)
+            "VALUES (?, ?, ?)", (device_id, now + 15.0, pole_id)
         )
         messages_generated += 2
 
@@ -388,3 +413,81 @@ def inject_noise_duplicate_burst(con: sqlite3.Connection,
     con.commit()
     return {"noise_type": "duplicate_burst", "pole_id": p_id, "duplicates_sent": inserted_count,
             "note": "ingest dedup by pole_id+seq should absorb these"}
+
+
+# ─── Flask backend support functions ──────────────────────────────────────
+
+import hashlib
+
+DYING_MESSAGE_SUCCESS_RATE = 0.70
+OLD_FIRMWARE_FRACTION = 0.08
+
+def _is_old_firmware(device_id: str) -> bool:
+    """Deterministic per-device so the same device is always old-firmware
+    across simulation runs, rather than re-rolling the dice each time."""
+    h = int(hashlib.sha1(device_id.encode()).hexdigest(), 16)
+    return (h % 100) < int(OLD_FIRMWARE_FRACTION * 100)
+
+
+def _next_seq(con, device_id: str) -> int:
+    cur = con.cursor()
+    row = cur.execute("SELECT seq FROM device_seq WHERE device_id=?", (device_id,)).fetchone()
+    seq = (row[0] + 1) if row else 1
+    cur.execute("""INSERT INTO device_seq (device_id, seq) VALUES (?, ?)
+                   ON CONFLICT(device_id) DO UPDATE SET seq=?""", (device_id, seq, seq))
+    return seq
+
+
+def generate_fault_events(con, pole_rows, fault_time=None):
+    """
+    pole_rows: iterable of (pole_id, device_id) for the poles a fault should
+    affect. Returns (events, skipped) where events is a list of telemetry
+    dicts ready for ingest.ingest_batch(), and skipped explains, per pole,
+    why nothing was sent (no device / dying message lost / old firmware).
+    """
+    fault_time = fault_time or time.time()
+    events = []
+    skipped = []
+
+    for pole_id, device_id in pole_rows:
+        if not device_id:
+            skipped.append({"pole_id": pole_id, "reason": "no_device_fitted"})
+            continue
+
+        if _is_old_firmware(device_id):
+            # Never sends power_lost. Backdate last-seen so staleness
+            # detection is the only thing that can catch it -- exactly as
+            # the real fleet behaves.
+            con.execute("""INSERT INTO device_last_seen (device_id, ts) VALUES (?, ?)
+                           ON CONFLICT(device_id) DO UPDATE SET ts=?""",
+                        (device_id, fault_time - STALE_THRESHOLD_S - 10,
+                         fault_time - STALE_THRESHOLD_S - 10))
+            skipped.append({"pole_id": pole_id, "reason": "firmware_1.2_silent"})
+            continue
+
+        if random.random() > DYING_MESSAGE_SUCCESS_RATE:
+            # Capacitor reserve message didn't make it. Also backdate
+            # last-seen, same reasoning as above -- staleness is the catch.
+            con.execute("""INSERT INTO device_last_seen (device_id, ts) VALUES (?, ?)
+                           ON CONFLICT(device_id) DO UPDATE SET ts=?""",
+                        (device_id, fault_time - STALE_THRESHOLD_S - 10,
+                         fault_time - STALE_THRESHOLD_S - 10))
+            skipped.append({"pole_id": pole_id, "reason": "dying_message_lost"})
+            continue
+
+        seq = _next_seq(con, device_id)
+        events.append({
+            "device_id": device_id,
+            "pole_id": pole_id,
+            "event": "power_lost",
+            "energized": False,
+            "ts": fault_time + random.uniform(-90, 90),  # device clock skew
+            "seq": seq,
+            "battery_mv": random.randint(3150, 3450),
+            "rssi": random.randint(-100, -60),
+            "fw": "1.4.2",
+        })
+
+    con.commit()
+    return events, skipped
+

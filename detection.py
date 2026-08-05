@@ -49,6 +49,20 @@ from telemetry_sim import STALE_THRESHOLD_S
 def compute_pole_statuses(con, pole_rows):
     """pole_rows: iterable of (pole_id, device_id). Returns {pole_id: status}."""
     now = time.time()
+    cur = con.cursor()
+
+    # Load active scheduled outages (status='active' and currently within time window)
+    active_outages = con.execute(
+        "SELECT scope, target_id FROM scheduled_outages "
+        "WHERE status = 'active' AND start_ts <= ? AND end_ts >= ?", (now, now)
+    ).fetchall()
+    outage_targets = set((o[0], o[1]) for o in active_outages)
+
+    # Load pole info for quick mapping
+    pole_info = {
+        r[0]: (r[1], r[2])
+        for r in con.execute("SELECT pole_id, dt_id, feeder_id FROM pole_registry").fetchall()
+    }
 
     latest_event = {}
     for pole_id, event, ts in con.execute(
@@ -69,7 +83,17 @@ def compute_pole_statuses(con, pole_rows):
         stale = seen_ts is None or (now - seen_ts) > STALE_THRESHOLD_S
 
         if ev == "power_lost" or stale:
-            statuses[pole_id] = "fault"
+            # Check if this pole is under a scheduled outage right now
+            dt_id, feeder_id = pole_info.get(pole_id, (None, None))
+            is_load_shed = (
+                ("pole", pole_id) in outage_targets or
+                ("dt", dt_id) in outage_targets or
+                ("feeder", feeder_id) in outage_targets
+            )
+            if is_load_shed:
+                statuses[pole_id] = "load_shed"
+            else:
+                statuses[pole_id] = "fault"
         else:
             statuses[pole_id] = "normal"
 
@@ -96,7 +120,7 @@ def run_detection_pass(con, graph):
     cur = con.cursor()
 
     open_tickets = cur.execute(
-        "SELECT id, target_id, affected_pole_ids FROM tickets "
+        "SELECT id, target_id, affected_pole_ids, status, resolved_at FROM tickets "
         "WHERE status NOT IN ('verified','closed')").fetchall()
     open_by_dt = {t[1]: t for t in open_tickets}
 
@@ -110,12 +134,36 @@ def run_detection_pass(con, graph):
                        VALUES (?, 'dt', ?, ?, 'detected', ?)""",
                     (ticket_id, dt_id, ",".join(dark_poles), now))
 
-    # Auto-verify tickets whose poles are all back to normal
-    for dt_id, ticket in open_by_dt.items():
-        ticket_id, _, affected_csv = ticket
+    # Auto-verify tickets whose poles have recovered or passed the resolution grace period
+    for ticket in open_tickets:
+        ticket_id, dt_id, affected_csv, status, resolved_at = ticket
         affected = affected_csv.split(",") if affected_csv else []
-        if affected and all(statuses.get(p) == "normal" for p in affected):
-            cur.execute("UPDATE tickets SET status='verified' WHERE id=?", (ticket_id,))
+        if not affected:
+            continue
+
+        total_count = len(affected)
+        normal_count = sum(1 for p in affected if statuses.get(p) == "normal")
+        recovery_fraction = normal_count / total_count if total_count > 0 else 0
+
+        # Condition 1: High confidence (>= 70% recovered)
+        high_confidence = recovery_fraction >= 0.70
+
+        # Condition 2: Resolution grace period (status is resolved, >= 50% recovered, and 120s elapsed)
+        grace_passed = False
+        if status == "resolved" and resolved_at is not None:
+            if (now - resolved_at) >= 120 and recovery_fraction >= 0.50:
+                grace_passed = True
+
+        if high_confidence or grace_passed:
+            cur.execute("UPDATE tickets SET status='verified', verified_at=? WHERE id=?", (now, ticket_id))
+
+    # verified -> closed transition:
+    # We apply a short 10-second grace period after a ticket is marked as 'verified'
+    # so that the operator can briefly see the verified state before the ticket is closed.
+    verified_tickets = cur.execute("SELECT id, verified_at FROM tickets WHERE status='verified'").fetchall()
+    for t_id, v_at in verified_tickets:
+        if v_at is None or (now - v_at) >= 10:
+            cur.execute("UPDATE tickets SET status='closed', closed_at=? WHERE id=?", (now, t_id))
 
     con.commit()
     return statuses

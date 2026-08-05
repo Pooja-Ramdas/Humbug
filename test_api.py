@@ -50,9 +50,14 @@ print(f'\nRestoring {target_dt}...')
 res = post('/simulate/restore', {'type': 'dt', 'target_id': target_dt})
 print('Restore result:', res)
 
-# Check tickets again
+# Trigger explicit detection pass and wait
+import time
+time.sleep(1.0)
+post('/detect', {})
 time.sleep(0.5)
+
+# Check tickets again
 tickets = get('/tickets')
-print(f'\nTickets after restore: {len(tickets)}')
+print(f'\nTickets after restore + detect: {len(tickets)}')
 for t in tickets:
-    print(f"  {t['id']} status={t['status']} verified_at={t.get('verified_at')}")
+    print(f"  {t['id']} status={t['status']} verified_at={t.get('verified_at')} closed_at={t.get('closed_at')}")

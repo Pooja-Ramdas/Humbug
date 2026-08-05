@@ -60,6 +60,7 @@ window.HumbugTickets = (() => {
     function handleClick(e) {
       e.preventDefault();
       onOpen(ticket.id);
+      onFlyTo(ticket);
     }
     function handleMapClick(e) {
       e.stopPropagation();

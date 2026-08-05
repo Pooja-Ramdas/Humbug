@@ -89,12 +89,10 @@ window.HumbugSimulator = (() => {
         }));
       }
       // span — target is a pole
-      return poles
-        .filter(p => p.parent_pole_id || p.seq_on_line)  // only poles with known position
-        .map(p => ({
-          id: p.pole_id,
-          sub: `${p.dt_id} · seq ${p.seq_on_line || '?'} · ${p.lat?.toFixed(5)}°N`,
-        }));
+      return poles.map(p => ({
+        id: p.pole_id,
+        sub: `${p.dt_id} · seq ${p.seq_on_line || '?'} · ${p.lat?.toFixed(5)}°N`,
+      }));
     })();
 
     async function handleSubmit(e) {
@@ -186,15 +184,234 @@ window.HumbugSimulator = (() => {
     );
   }
 
+  // ─── ActiveLoadShedItem ──────────────────────────────────────────────
+  function ActiveLoadShedItem({ outage, onEnd }) {
+    const [ending, setEnding] = useState(false);
+    const [timeLeft, setTimeLeft] = useState(Math.max(0, Math.round(outage.end_ts - Date.now() / 1000)));
+
+    // Tick the countdown timer every second
+    useEffect(() => {
+      const timer = setInterval(() => {
+        const remaining = Math.max(0, Math.round(outage.end_ts - Date.now() / 1000));
+        setTimeLeft(remaining);
+        if (remaining <= 0) {
+          clearInterval(timer);
+        }
+      }, 1000);
+      return () => clearInterval(timer);
+    }, [outage.end_ts]);
+
+    async function handleEnd(e) {
+      e.stopPropagation();
+      setEnding(true);
+      try { await onEnd(outage); }
+      finally { setEnding(false); }
+    }
+
+    const mins = Math.floor(timeLeft / 60);
+    const secs = timeLeft % 60;
+    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+    return h('div', { className: 'active-fault-item' },
+      h('div', null,
+        h('div', { className: 'active-fault-id', style: { color: 'var(--accent-yellow)', textShadow: '0 0 4px rgba(255, 230, 0, 0.3)' } }, `LOAD SHED · ${outage.target_id}`),
+        h('div', { className: 'active-fault-meta' }, `Time remaining: ${timeStr}`)
+      ),
+      h('button', {
+        className: 'btn btn-warn',
+        style: { fontSize: '11px', padding: '4px 10px' },
+        disabled: ending,
+        onClick: handleEnd,
+      }, ending ? h('span', { className: 'spinner' }) : '✕ End Early')
+    );
+  }
+
+  // ─── LoadShedDialog ──────────────────────────────────────────────────
+  function LoadShedDialog({ poles, transformers, feeders, onClose, onSubmit }) {
+    const [scope, setScope] = useState('dt');
+    const [targetId, setTargetId] = useState('');
+    const [duration, setDuration] = useState('60');
+    const [submitting, setSubmitting] = useState(false);
+
+    useEffect(() => {
+      const el = document.querySelector('.dialog-title');
+      if (el) el.textContent = 'SCHEDULE LOAD SHEDDING';
+    }, []);
+
+    const options = (() => {
+      if (scope === 'feeder') {
+        return feeders.map(f => ({
+          id: f.feeder_id,
+          sub: `Substation ${f.substation_id} · ${f.lat?.toFixed(4)}°N ${f.lon?.toFixed(4)}°E`,
+        }));
+      }
+      if (scope === 'dt') {
+        return transformers.map(t => ({
+          id: t.dt_id,
+          sub: `${t.feeder_id} · ${t.capacity_kva}kVA · ${t.households_served} households`,
+        }));
+      }
+      return poles.map(p => ({
+        id: p.pole_id,
+        sub: `${p.dt_id} · seq ${p.seq_on_line || '?'} · ${p.lat?.toFixed(5)}°N`,
+      }));
+    })();
+
+    async function handleSubmit(e) {
+      e.preventDefault();
+      if (!targetId) { showToast('Select a target first', 'warn'); return; }
+      setSubmitting(true);
+      try {
+        await Api.simulateLoadShed(scope, targetId, parseInt(duration));
+        showToast(`Load shedding scheduled for ${targetId}`, 'success');
+        
+        // Trigger manual detection refresh
+        await Api.triggerDetection().catch(() => {});
+        if (onSubmit) onSubmit();
+        onClose();
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        setSubmitting(false);
+      }
+    }
+
+    const scopeLabels = { pole: 'Single Pole', dt: 'Whole Transformer (DT)', feeder: 'Feeder Line' };
+
+    return h('form', { onSubmit: handleSubmit },
+      h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Outage Scope'),
+        h('select', {
+          className: 'form-select',
+          value: scope,
+          onChange: e => { setScope(e.target.value); setTargetId(''); },
+        },
+          Object.entries(scopeLabels).map(([val, label]) =>
+            h('option', { key: val, value: val }, label)
+          )
+        )
+      ),
+
+      h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Target ID'),
+        h(Combobox, {
+          options,
+          value: targetId,
+          onChange: setTargetId,
+          placeholder: `Search ${scope === 'feeder' ? 'feeder' : scope === 'dt' ? 'DT' : 'pole'} ID…`,
+        })
+      ),
+
+      h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Duration'),
+        h('select', {
+          className: 'form-select',
+          value: duration,
+          onChange: e => setDuration(e.target.value),
+        },
+          h('option', { value: '15' }, '15 Minutes'),
+          h('option', { value: '30' }, '30 Minutes'),
+          h('option', { value: '60' }, '1 Hour'),
+          h('option', { value: '120' }, '2 Hours'),
+          h('option', { value: '240' }, '4 Hours')
+        )
+      ),
+
+      h('div', { className: 'dialog-footer', style: { padding: '16px 0 0 0', marginTop: '16px', borderTop: '1px solid var(--border-dim)' } },
+        h('button', { type: 'button', className: 'btn btn-ghost', onClick: onClose }, 'Cancel'),
+        h('button', {
+          type: 'submit',
+          className: 'btn btn-warn',
+          disabled: !targetId || submitting,
+        }, submitting ? h('span', { className: 'spinner' }) : '🕐 Confirm Outage')
+      )
+    );
+  }
+
+  // ─── NoiseDialog ─────────────────────────────────────────────────────
+  function NoiseDialog({ poles, transformers, feeders, onClose, onSubmit }) {
+    const [noiseType, setNoiseType] = useState('device_death');
+    const [targetId, setTargetId] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+
+    useEffect(() => {
+      const el = document.querySelector('.dialog-title');
+      if (el) el.textContent = 'INJECT TELEMETRY NOISE';
+    }, []);
+
+    const options = (() => {
+      return poles.map(p => ({
+        id: p.pole_id,
+        sub: `${p.dt_id} · seq ${p.seq_on_line || '?'} · ${p.lat?.toFixed(5)}°N`,
+      }));
+    })();
+
+    async function handleSubmit(e) {
+      e.preventDefault();
+      setSubmitting(true);
+      try {
+        await Api.simulateNoise(noiseType, targetId || null, 'pole', 60);
+        showToast(`Noise injected successfully`, 'success');
+        
+        // Trigger manual detection refresh
+        await Api.triggerDetection().catch(() => {});
+        if (onSubmit) onSubmit();
+        onClose();
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        setSubmitting(false);
+      }
+    }
+
+    const noiseLabels = { 
+      device_death: '📡 Dead device modem (loss of heartbeat)', 
+      duplicate_burst: '♻ Duplicate burst (at-least-once retry storm)' 
+    };
+
+    return h('form', { onSubmit: handleSubmit },
+      h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Noise Type'),
+        h('select', {
+          className: 'form-select',
+          value: noiseType,
+          onChange: e => { setNoiseType(e.target.value); setTargetId(''); },
+        },
+          Object.entries(noiseLabels).map(([val, label]) =>
+            h('option', { key: val, value: val }, label)
+          )
+        )
+      ),
+
+      h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Target Pole ID (Optional)'),
+        h(Combobox, {
+          options,
+          value: targetId,
+          onChange: setTargetId,
+          placeholder: 'Search/Select specific pole (blank for random)…',
+        })
+      ),
+
+      h('div', { className: 'dialog-footer', style: { padding: '16px 0 0 0', marginTop: '16px', borderTop: '1px solid var(--border-dim)' } },
+        h('button', { type: 'button', className: 'btn btn-ghost', onClick: onClose }, 'Cancel'),
+        h('button', {
+          type: 'submit',
+          className: 'btn btn-primary',
+          disabled: submitting,
+        }, submitting ? h('span', { className: 'spinner' }) : '⚡ Inject Noise')
+      )
+    );
+  }
+
   // ─── SimulatorPanel ──────────────────────────────────────────────────
   function SimulatorPanel() {
     const [poles, setPoles] = useState([]);
     const [transformers, setTransformers] = useState([]);
     const [feeders, setFeeders] = useState([]);
     const [activeFaults, setActiveFaults] = useState([]);
-    const [dialogOpen, setDialogOpen] = useState(false);
+    const [activeDialog, setActiveDialog] = useState(null); // 'fault' | 'load_shed' | 'noise' | null
     const [collapsed, setCollapsed] = useState(false);
-    const [noiseTarget, setNoiseTarget] = useState('');
 
     // Load static data once
     useEffect(() => {
@@ -207,6 +424,35 @@ window.HumbugSimulator = (() => {
     useEffect(() => {
       HumbugPoller.subscribe('activeFaults', setActiveFaults);
       return () => HumbugPoller.unsubscribe('activeFaults', setActiveFaults);
+    }, []);
+
+    // Active load shedding from poller
+    const [activeLoadShed, setActiveLoadShed] = useState([]);
+    useEffect(() => {
+      HumbugPoller.subscribe('activeLoadShed', setActiveLoadShed);
+      return () => HumbugPoller.unsubscribe('activeLoadShed', setActiveLoadShed);
+    }, []);
+
+    async function handleEndLoadShed(outage) {
+      try {
+        await Api.endLoadShed(outage.id);
+        showToast(`Load shedding ended: ${outage.target_id}`, 'ok');
+        await HumbugPoller.refresh();
+      } catch (e) {
+        showToast(`End load shed failed: ${e.message}`, 'err');
+      }
+    }
+
+    // Sync HTML Close button with React state
+    useEffect(() => {
+      const closeBtn = document.getElementById('inject-close-btn');
+      if (closeBtn) {
+        closeBtn.onclick = () => {
+          const overlay = document.getElementById('inject-dialog');
+          if (overlay) overlay.classList.add('dialog-hidden');
+          setActiveDialog(null);
+        };
+      }
     }, []);
 
     async function handleInject(faultType, targetId) {
@@ -238,16 +484,6 @@ window.HumbugSimulator = (() => {
       }
     }
 
-    async function injectNoise(noiseType, extraArgs = {}) {
-      try {
-        const res = await Api.simulateNoise(noiseType, noiseTarget || null, extraArgs.scope, extraArgs.duration);
-        showToast(`Noise injected: ${noiseType}`, 'info');
-        await HumbugPoller.refresh();
-      } catch (e) {
-        showToast(`Noise inject failed: ${e.message}`, 'err');
-      }
-    }
-
     // Sync collapse button state
     useEffect(() => {
       const btn = document.getElementById('sim-collapse-btn');
@@ -263,12 +499,19 @@ window.HumbugSimulator = (() => {
     }, []);
 
     return h(React.Fragment, null,
-      h('div', { className: 'sim-actions' },
+      h('div', { className: 'sim-actions-grid', style: { display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' } },
         h('button', {
           className: 'btn btn-danger w-full',
-          onClick: () => setDialogOpen(true),
-          style: { flex: 1 },
-        }, '⚡ Inject Fault')
+          onClick: () => setActiveDialog('fault'),
+        }, '⚡ Inject Fault'),
+        h('button', {
+          className: 'btn btn-warn w-full',
+          onClick: () => setActiveDialog('load_shed'),
+        }, '🕐 Schedule Load Shedding'),
+        h('button', {
+          className: 'btn btn-primary w-full',
+          onClick: () => setActiveDialog('noise'),
+        }, '📡 Inject Telemetry Noise')
       ),
 
       activeFaults.length > 0 && h('div', { className: 'active-faults-list' },
@@ -279,72 +522,46 @@ window.HumbugSimulator = (() => {
         )
       ),
 
-      activeFaults.length === 0 && h('div', { className: 'text-xs text-dim', style: { marginTop: '8px' } },
+      activeFaults.length === 0 && h('div', { className: 'text-xs text-dim', style: { marginTop: '8px', marginBottom: '8px', textAlign: 'center' } },
         'No active injected faults. Inject one above.'
       ),
 
-      // Noise section — clearly separated from real fault injection
-      h('div', { className: 'noise-section' },
-        h('div', { className: 'noise-section-title' }, 'Independent Noise (not faults)'),
-        h('div', { className: 'form-group', style: { marginBottom: '8px' } },
-          h('input', {
-            className: 'form-input',
-            placeholder: 'Pole/DT/Feeder ID (optional)',
-            value: noiseTarget,
-            onChange: e => setNoiseTarget(e.target.value),
-            style: { fontSize: '11px' },
-          })
-        ),
-        h('div', { className: 'noise-actions' },
-          h('button', {
-            className: 'btn btn-ghost',
-            style: { fontSize: '11px', padding: '4px 8px' },
-            title: 'Simulate a device modem dying while power is fine — should NOT generate a fault ticket',
-            onClick: () => injectNoise('device_death'),
-          }, '📡 Dead device'),
-          h('button', {
-            className: 'btn btn-ghost',
-            style: { fontSize: '11px', padding: '4px 8px' },
-            title: 'Register a scheduled outage window so dark poles are suppressed',
-            onClick: () => injectNoise('load_shed', { scope: 'dt', duration: 60 }),
-          }, '🕐 Load shed'),
-          h('button', {
-            className: 'btn btn-ghost',
-            style: { fontSize: '11px', padding: '4px 8px' },
-            title: 'Send duplicate heartbeat messages — tests dedup logic',
-            onClick: () => injectNoise('duplicate_burst'),
-          }, '♻ Duplicate burst'),
+      activeLoadShed.length > 0 && h('div', { className: 'active-faults-list', style: { marginTop: '8px' } },
+        h('div', { className: 'text-xs text-dim', style: { marginBottom: '8px', letterSpacing: '0.08em' } },
+          `${activeLoadShed.length} ACTIVE LOAD SHEDDING EVENT${activeLoadShed.length > 1 ? 'S' : ''}`),
+        activeLoadShed.map(o =>
+          h(ActiveLoadShedItem, { key: o.id, outage: o, onEnd: handleEndLoadShed })
         )
       ),
 
-      // Inject dialog — rendered into the stable dialog root (created once in render())
-      dialogOpen && (() => {
+      // Dialog renderer
+      activeDialog && (() => {
         const overlay = document.getElementById('inject-dialog');
         const dialogRoot = window.HumbugSimulator && window.HumbugSimulator.getDialogRoot
           ? window.HumbugSimulator.getDialogRoot()
           : null;
         if (overlay) overlay.classList.remove('dialog-hidden');
         if (dialogRoot) {
-          dialogRoot.render(
-            h(InjectDialog, {
-              poles, transformers, feeders,
-              onClose: () => {
-                if (overlay) overlay.classList.add('dialog-hidden');
-                setDialogOpen(false);
-              },
-              onSubmit: handleInject,
-            })
-          );
+          let comp = null;
+          const onClose = () => {
+            if (overlay) overlay.classList.add('dialog-hidden');
+            setActiveDialog(null);
+          };
+          if (activeDialog === 'fault') {
+            comp = h(InjectDialog, { poles, transformers, feeders, onClose, onSubmit: handleInject });
+          } else if (activeDialog === 'load_shed') {
+            comp = h(LoadShedDialog, { poles, transformers, feeders, onClose, onSubmit: () => HumbugPoller.refresh() });
+          } else if (activeDialog === 'noise') {
+            comp = h(NoiseDialog, { poles, transformers, feeders, onClose, onSubmit: () => HumbugPoller.refresh() });
+          }
+          if (comp) {
+            dialogRoot.render(comp);
+          }
         }
         return null;
       })()
     );
   }
-
-  // ─── Wire dialog close button ─────────────────────────────────────────
-  document.getElementById('inject-close-btn')?.addEventListener('click', () => {
-    document.getElementById('inject-dialog')?.classList.add('dialog-hidden');
-  });
 
   // ─── Public API ──────────────────────────────────────────────────────
   let _root = null;

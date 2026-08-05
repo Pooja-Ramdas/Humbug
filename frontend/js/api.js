@@ -9,7 +9,14 @@
  * against the 120s p95 detection-to-UI target.
  */
 
-const API_BASE = window.HUMBUG_API_BASE || 'http://localhost:8000';
+const API_BASE = window.HUMBUG_API_BASE || (() => {
+  if (window.location.protocol === 'file:') return 'http://localhost:8000';
+  // If served via Nginx proxy (e.g. port 80 or standard reverse proxy setup)
+  if (window.location.port === '' || window.location.port === '80' || window.location.port === '443') {
+    return window.location.origin + '/api';
+  }
+  return 'http://localhost:8000';
+})();
 
 // ─── Internal fetch wrapper ───────────────────────────────────────────────
 
@@ -64,8 +71,20 @@ const Api = {
 
   getActiveFaults: () => apiFetch('/simulate/active'),
 
-  // ─── Scheduled outages ─────────────────────────────────────────────────
+  // ─── Scheduled outages / Load Shedding ──────────────────────────────────
   getScheduledOutages: () => apiFetch('/scheduled-outages'),
+  createScheduledOutage: (scope, target_id, start_ts, end_ts, reason) =>
+    apiFetch('/scheduled-outages', {
+      method: 'POST',
+      body: JSON.stringify({ scope, target_id, start_ts, end_ts, reason }),
+    }),
+  simulateLoadShed: (scope, target_id, duration_minutes) =>
+    apiFetch('/api/simulate-load-shed', {
+      method: 'POST',
+      body: JSON.stringify({ scope, target_id, duration_minutes }),
+    }),
+  getActiveLoadShed: () => apiFetch('/api/active-load-shed'),
+  endLoadShed: (id) => apiFetch(`/api/end-load-shed/${id}`, { method: 'POST', body: '{}' }),
 
   // ─── Manual detection trigger ─────────────────────────────────────────
   triggerDetection: () => apiFetch('/detect', { method: 'POST' }),
@@ -104,18 +123,27 @@ const HumbugPoller = (() => {
   }
 
   async function pollFast() {
+    const safeFetch = (promise, fallback = null) => promise.catch(err => {
+      console.warn('[poller:fast-fetch-error]', err.message);
+      return fallback;
+    });
+
     try {
-      const [poles, tickets, stats, activeFaults] = await Promise.all([
-        Api.getPoles(),
-        Api.getTickets(),
-        Api.stats(),
-        Api.getActiveFaults(),
+      const [poles, tickets, stats, activeFaults, activeLoadShed] = await Promise.all([
+        safeFetch(Api.getPoles()),
+        safeFetch(Api.getTickets()),
+        safeFetch(Api.stats()),
+        safeFetch(Api.getActiveFaults(), []),
+        safeFetch(Api.getActiveLoadShed(), []),
       ]);
-      emit('poles', poles);
-      emit('tickets', tickets);
-      emit('stats', stats);
-      emit('activeFaults', activeFaults);
-      emit('connected', true);
+
+      if (poles) emit('poles', poles);
+      if (tickets) emit('tickets', tickets);
+      if (stats) emit('stats', stats);
+      if (activeFaults) emit('activeFaults', activeFaults);
+      if (activeLoadShed) emit('activeLoadShed', activeLoadShed);
+      
+      emit('connected', poles !== null);
     } catch (err) {
       console.warn('[poller:fast]', err.message);
       emit('connected', false);

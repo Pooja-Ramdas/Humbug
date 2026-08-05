@@ -20,11 +20,14 @@
   const metaBase = document.querySelector('meta[name="api-base"]');
   if (metaBase) {
     window.HUMBUG_API_BASE = metaBase.getAttribute('content');
-  } else if (window.location.port !== '8000') {
-    // Served by nginx on :80 — API is proxied at /api
+  } else if (window.location.port === '80' || window.location.port === '') {
+    // Served by nginx on standard HTTP port — API is proxied at /api
     window.HUMBUG_API_BASE = '/api';
+  } else if (window.location.port !== '8000') {
+    // Local dev server (e.g. python -m http.server 3000) — backend is on :8000
+    window.HUMBUG_API_BASE = 'http://localhost:8000';
   }
-  // else: already defaulted to localhost:8000 in api.js
+  // port === '8000': already defaulted to http://localhost:8000 in api.js
 
   // ─── Clock ─────────────────────────────────────────────────────────────
   function tickClock() {
@@ -105,6 +108,10 @@
 
     HumbugPoller.subscribe('edges', (edges) => {
       HumbugMap.updateEdges(edges);
+    });
+
+    HumbugPoller.subscribe('activeLoadShed', (outages) => {
+      HumbugMap.updateActiveLoadShed(outages);
     });
 
     HumbugPoller.subscribe('tickets', (tickets) => {

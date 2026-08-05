@@ -6,76 +6,78 @@
 
 /* ── 1. CSS CUSTOM PROPERTIES (design tokens) ──────────────── */
 :root {
-  /* Backgrounds */
-  --bg-base:        #0a0e14;
-  --bg-surface:     #0f1520;
-  --bg-raised:      #141c28;
-  --bg-overlay:     #1a2438;
-  --bg-hover:       #1e2b3e;
-  --bg-active:      #243447;
+  /* Cyberpunk Backgrounds */
+  --bg-base:        #03060c; /* Deep cybernetic black */
+  --bg-surface:     #070d18; /* Surface color */
+  --bg-raised:      #0c1424; /* Elevated color */
+  --bg-overlay:     #121d33;
+  --bg-hover:       #182945;
+  --bg-active:      #1f3659;
 
-  /* Borders */
-  --border-dim:     rgba(56, 139, 212, 0.12);
-  --border-low:     rgba(56, 139, 212, 0.22);
-  --border-mid:     rgba(56, 139, 212, 0.38);
-  --border-bright:  rgba(56, 139, 212, 0.65);
+  /* Cyberpunk Glowing Neon Borders */
+  --border-dim:     rgba(0, 240, 255, 0.10);
+  --border-low:     rgba(0, 240, 255, 0.22);
+  --border-mid:     rgba(0, 240, 255, 0.40);
+  --border-bright:  rgba(0, 240, 255, 0.70);
 
-  /* Accent — cyan/electric blue chrome */
-  --accent:         #38bdf8;
-  --accent-dim:     #1e6fa8;
-  --accent-glow:    rgba(56, 189, 248, 0.18);
-  --accent-glow-strong: rgba(56, 189, 248, 0.35);
+  /* Cyberpunk Accents — Hot Cyan/Pink/Yellow */
+  --accent:         #00f0ff;   /* Neon Cyan */
+  --accent-dim:     #008a99;
+  --accent-pink:    #ff0055;   /* Neon Pink */
+  --accent-yellow:  #ffe600;   /* Neon Yellow */
+  --accent-glow:    rgba(0, 240, 255, 0.20);
+  --accent-glow-strong: rgba(0, 240, 255, 0.45);
 
-  /* Fault state colours — kept minimal so they stay legible */
-  --c-normal:       #22c55e;   /* green — energized */
-  --c-normal-dim:   #15803d;
-  --c-fault:        #ef4444;   /* red — active fault */
-  --c-fault-dim:    #991b1b;
-  --c-fault-glow:   rgba(239, 68, 68, 0.30);
-  --c-load-shed:    #6b7280;   /* solid grey — scheduled outage */
-  --c-unknown:      #374151;   /* hollow grey — no device */
-  --c-inferred:     #4b5563;   /* dim — inferred topology edge */
-  --c-warning:      #f59e0b;   /* amber — medium confidence */
-  --c-info:         #38bdf8;
+  /* Cyberpunk State Colors */
+  --c-normal:       #39ff14;   /* Neon Green */
+  --c-normal-dim:   #1b9d00;
+  --c-fault:        #ff0055;   /* Neon Pink/Red */
+  --c-fault-dim:    #aa0033;
+  --c-fault-glow:   rgba(255, 0, 85, 0.35);
+  --c-load-shed:    #ffe600;   /* Neon Yellow */
+  --c-unknown:      #8a8a8a;   /* Offline/Unknown Grey */
+  --c-inferred:     #5b6f84;
+  --c-warning:      #ffe600;   /* Neon Yellow */
+  --c-info:         #00f0ff;
 
-  /* Text */
-  --text-primary:   #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-dim:       #475569;
-  --text-accent:    #38bdf8;
-  --text-fault:     #f87171;
-  --text-ok:        #4ade80;
+  /* Cyberpunk Text */
+  --text-primary:   #e2efff;   /* Cool light blue */
+  --text-secondary: #8da4c4;
+  --text-dim:       #485d7b;
+  --text-accent:    #00f0ff;
+  --text-fault:     #ff4d88;
+  --text-ok:        #69ff4d;
 
-  /* Typography */
-  --font-mono: 'IBM Plex Mono', 'Fira Code', 'JetBrains Mono', monospace;
-  --font-size-xs:   0.65rem;
-  --font-size-sm:   0.72rem;
-  --font-size-base: 0.8rem;
-  --font-size-md:   0.875rem;
-  --font-size-lg:   1rem;
-  --font-size-xl:   1.2rem;
-  --font-size-2xl:  1.5rem;
+  /* Cyberpunk Typography */
+  --font-mono: 'Fira Code', 'IBM Plex Mono', 'Share Tech Mono', monospace;
+  --font-size-xs:   0.85rem;
+  --font-size-sm:   0.95rem;
+  --font-size-base: 1.05rem;
+  --font-size-md:   1.15rem;
+  --font-size-lg:   1.35rem;
+  --font-size-xl:   1.60rem;
+  --font-size-2xl:  2.10rem;
 
   /* Spacing scale (4px base) */
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
   --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
   --sp-8: 32px; --sp-10: 40px;
 
-  /* Radii — angular, not pill */
-  --radius-sm: 2px;
-  --radius-md: 3px;
-  --radius-lg: 4px;
+  /* Radii — angular/cyberpunk HUD */
+  --radius-sm: 0px; /* Completely sharp corners */
+  --radius-md: 2px;
+  --radius-lg: 3px;
 
   /* Shadows / glows */
-  --shadow-panel:  0 2px 16px rgba(0,0,0,0.5);
-  --shadow-raised: 0 4px 24px rgba(0,0,0,0.6);
-  --glow-accent:   0 0 12px var(--accent-glow);
-  --glow-fault:    0 0 14px var(--c-fault-glow);
+  --shadow-panel:  0 2px 20px rgba(0, 240, 255, 0.05);
+  --shadow-raised: 0 4px 30px rgba(0, 0, 0, 0.8);
+  --glow-accent:   0 0 15px var(--accent-glow-strong);
+  --glow-fault:    0 0 18px var(--c-fault-glow);
 
   /* Layout */
-  --header-h:      48px;
-  --right-col-w:   320px;
-  --drawer-w:      480px;
+  --header-h:      52px;
+  --right-col-w:   340px;
+  --drawer-w:      500px;
 }
 
 /* ── 2. RESET & BASE ────────────────────────────────────────── */
@@ -83,14 +85,33 @@
 
 html, body {
   height: 100%; width: 100%;
-  background: var(--bg-base);
+  background-color: var(--bg-base);
+  background-image: 
+    linear-gradient(rgba(0, 240, 255, 0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.012) 1px, transparent 1px);
+  background-size: 24px 24px;
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
   line-height: 1.5;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  position: relative;
 }
+
+/* Subtle CRT analog scanline overlay */
+body::after {
+  content: " ";
+  display: block;
+  position: fixed;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%);
+  background-size: 100% 4px;
+  z-index: 100000;
+  pointer-events: none;
+  opacity: 0.45;
+}
+
 
 #app {
   display: flex;
@@ -105,14 +126,14 @@ html, body {
   height: var(--header-h);
   min-height: var(--header-h);
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-low);
+  border-bottom: 2px solid var(--accent);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--sp-4);
   gap: var(--sp-4);
   z-index: 100;
-  box-shadow: 0 1px 0 var(--border-dim), var(--shadow-panel);
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.25);
 }
 
 .header-left {
@@ -130,16 +151,20 @@ html, body {
 }
 
 .logo-name {
-  font-size: var(--font-size-lg);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: var(--font-size-xl);
   font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: 0.12em;
+  color: var(--accent);
+  letter-spacing: 0.18em;
+  text-shadow: 0 0 5px rgba(0, 240, 255, 0.6), 0 0 15px rgba(0, 240, 255, 0.3);
 }
 
 .logo-sub {
+  font-family: 'Share Tech Mono', monospace;
   font-size: var(--font-size-xs);
-  color: var(--text-dim);
-  letter-spacing: 0.06em;
+  color: var(--accent-pink);
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 4px rgba(255, 0, 85, 0.5);
 }
 
 .header-center { flex: 1; display: flex; justify-content: center; }
@@ -234,13 +259,13 @@ html, body {
 
 /* Override Leaflet to match dark theme */
 .leaflet-container {
-  background: #0a0e14 !important;
+  background: var(--bg-base) !important;
   font-family: var(--font-mono) !important;
 }
 .leaflet-popup-content-wrapper {
   background: var(--bg-raised) !important;
-  border: 1px solid var(--border-mid) !important;
-  border-radius: var(--radius-md) !important;
+  border: 2px solid var(--border-mid) !important;
+  border-radius: var(--radius-sm) !important;
   box-shadow: var(--shadow-raised) !important;
   color: var(--text-primary) !important;
 }
@@ -280,6 +305,7 @@ html, body {
 .dot-normal       { background: var(--c-normal); box-shadow: 0 0 5px var(--c-normal); }
 .dot-fault        { background: var(--c-fault);  box-shadow: 0 0 5px var(--c-fault); }
 .dot-load-shedding{ background: var(--c-load-shed); }
+.dot-load-shed    { background: var(--c-load-shed); }
 .dot-unknown      { background: transparent; border: 1.5px dashed var(--c-unknown); }
 .line-span        { background: var(--border-bright); }
 .line-inferred    { background: var(--c-inferred); }
@@ -294,6 +320,7 @@ html, body {
 .status-normal { color: var(--c-normal) !important; }
 .status-fault  { color: var(--text-fault) !important; }
 .status-load-shedding { color: var(--c-load-shed) !important; }
+.status-load-shed     { color: var(--c-load-shed) !important; }
 .status-unknown { color: var(--text-dim) !important; }
 
 /* ── 6. RIGHT COLUMN / PANELS ───────────────────────────────── */
@@ -375,8 +402,8 @@ html, body {
 
 .ticket-card {
   background: var(--bg-raised);
-  border: 1px solid var(--border-dim);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-low);
+  border-radius: var(--radius-sm);
   padding: var(--sp-3);
   margin-bottom: var(--sp-2);
   cursor: pointer;
@@ -387,19 +414,23 @@ html, body {
 .ticket-card::before {
   content: '';
   position: absolute; left: 0; top: 0; bottom: 0;
-  width: 3px;
+  width: 4px;
   background: var(--c-fault);
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
 .ticket-card.status-acknowledged::before  { background: var(--c-warning); }
 .ticket-card.status-crew_assigned::before { background: var(--accent); }
 .ticket-card.status-resolved::before      { background: var(--accent-dim); }
 
 .ticket-card:hover {
-  border-color: var(--border-mid);
+  border-color: var(--border-bright);
   background: var(--bg-hover);
-  box-shadow: var(--glow-accent);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
 }
+
+.ticket-card.status-detected:hover { box-shadow: 0 0 12px rgba(255, 0, 85, 0.2); border-color: rgba(255, 0, 85, 0.5); }
+.ticket-card.status-acknowledged:hover { box-shadow: 0 0 12px rgba(255, 230, 0, 0.2); border-color: rgba(255, 230, 0, 0.5); }
+.ticket-card.status-crew_assigned:hover { box-shadow: 0 0 12px rgba(0, 240, 255, 0.2); border-color: rgba(0, 240, 255, 0.5); }
+
 
 .ticket-card-top {
   display: flex; align-items: flex-start; justify-content: space-between;
@@ -533,53 +564,51 @@ html, body {
 .ticket-actions { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-top: var(--sp-5); }
 
 /* ── 10. BUTTONS ────────────────────────────────────────────── */
-/* Sense of depth without skeuomorphism — layered box-shadow */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-4);
-  font-family: var(--font-mono);
+  font-family: 'Share Tech Mono', var(--font-mono);
   font-size: var(--font-size-sm);
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  border-radius: var(--radius-md);
-  border: 1px solid;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-radius: var(--radius-sm);
+  border: 2px solid;
   cursor: pointer;
-  transition: box-shadow 0.12s, border-color 0.12s, background 0.12s, transform 0.08s;
+  transition: box-shadow 0.15s, border-color 0.15s, background 0.15s, transform 0.08s;
   text-decoration: none;
   white-space: nowrap;
   user-select: none;
 }
 .btn:active { transform: translateY(1px); }
-.btn:disabled, .btn[disabled] { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+.btn:disabled, .btn[disabled] { opacity: 0.25; cursor: not-allowed; pointer-events: none; border-color: var(--text-dim) !important; color: var(--text-dim) !important; background: transparent !important; }
 
-/* Primary — filled accent */
+/* Primary — filled accent (Hot Cyan) */
 .btn-primary {
-  background: var(--accent-dim);
+  background: rgba(0, 240, 255, 0.15);
   border-color: var(--accent);
-  color: #fff;
-  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset,
-              0 2px 4px rgba(0,0,0,0.4),
-              0 0 0 rgba(56,189,248,0);
+  color: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.1);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset,
-              0 2px 4px rgba(0,0,0,0.4),
-              0 0 16px var(--accent-glow-strong);
+  color: var(--bg-base);
+  box-shadow: 0 0 20px var(--accent);
 }
 .btn-primary:active:not(:disabled) { background: var(--accent-dim); box-shadow: none; }
 
-/* Danger — fault red */
+/* Danger — fault pink/red */
 .btn-danger {
-  background: var(--c-fault-dim);
+  background: rgba(255, 0, 85, 0.15);
   border-color: var(--c-fault);
-  color: #fff;
-  box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 2px 4px rgba(0,0,0,0.4);
+  color: var(--c-fault);
+  box-shadow: 0 0 8px rgba(255, 0, 85, 0.1);
 }
 .btn-danger:hover:not(:disabled) {
   background: var(--c-fault);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.1) inset, 0 0 16px var(--c-fault-glow);
+  color: #fff;
+  box-shadow: 0 0 20px var(--c-fault);
 }
 
 /* Ghost — outlined */
@@ -587,41 +616,47 @@ html, body {
   background: transparent;
   border-color: var(--border-mid);
   color: var(--text-secondary);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
 }
 .btn-ghost:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow);
+  background: rgba(0, 240, 255, 0.08);
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.3);
 }
 
-/* Warn — amber */
+/* Warn — amber/yellow */
 .btn-warn {
-  background: rgba(245,158,11,0.15);
-  border-color: var(--c-warning);
-  color: var(--c-warning);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  background: rgba(255, 230, 0, 0.12);
+  border-color: var(--accent-yellow);
+  color: var(--accent-yellow);
 }
-.btn-warn:hover:not(:disabled) { background: rgba(245,158,11,0.25); box-shadow: 0 0 12px rgba(245,158,11,0.3); }
+.btn-warn:hover:not(:disabled) {
+  background: var(--accent-yellow);
+  color: var(--bg-base);
+  box-shadow: 0 0 20px var(--accent-yellow);
+}
 
-/* Success */
+/* Success — green */
 .btn-success {
-  background: rgba(34,197,94,0.12);
+  background: rgba(57, 255, 20, 0.12);
   border-color: var(--c-normal);
   color: var(--c-normal);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
 }
-.btn-success:hover:not(:disabled) { background: rgba(34,197,94,0.22); box-shadow: 0 0 12px rgba(34,197,94,0.3); }
+.btn-success:hover:not(:disabled) {
+  background: var(--c-normal);
+  color: var(--bg-base);
+  box-shadow: 0 0 20px var(--c-normal);
+}
 
 /* Icon button */
 .btn-icon {
   background: transparent; border: none; cursor: pointer;
-  color: var(--text-dim); font-size: var(--font-size-sm);
+  color: var(--text-secondary); font-size: var(--font-size-sm);
   padding: var(--sp-1) var(--sp-2); border-radius: var(--radius-sm);
-  font-family: var(--font-mono); transition: color 0.15s, background 0.15s;
+  font-family: 'Share Tech Mono', var(--font-mono); transition: color 0.15s, background 0.15s;
   line-height: 1;
 }
-.btn-icon:hover { color: var(--accent); background: var(--accent-glow); }
+.btn-icon:hover { color: var(--accent); background: rgba(0, 240, 255, 0.1); }
 
 /* ── 11. FORM ELEMENTS ──────────────────────────────────────── */
 .form-group { margin-bottom: var(--sp-4); }

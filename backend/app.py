@@ -578,6 +578,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Humbug", version="1.0.0", lifespan=lifespan)
 
+@app.get("/")
+def root():
+    return {"status": "Humbug backend is running"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

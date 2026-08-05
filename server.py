@@ -9,7 +9,8 @@ nothing is ever hand-set. See detection.py for the actual rules.
 import os
 import sqlite3
 import time
-from flask import Flask, jsonify, request
+from pathlib import Path
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from graph_lib import build_graph
@@ -18,8 +19,33 @@ import detection
 
 DB_PATH = os.environ.get("KSPDB_DB", os.path.join(os.path.dirname(__file__), "data.db"))
 
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+
 app = Flask(__name__)
 CORS(app)
+
+@app.route("/")
+def index():
+    if (FRONTEND_DIR / "index.html").exists():
+        return send_from_directory(str(FRONTEND_DIR), "index.html")
+    return jsonify({"status": "ok"})
+
+@app.route("/css/<path:path>")
+def serve_css(path):
+    return send_from_directory(str(FRONTEND_DIR / "css"), path)
+
+@app.route("/js/<path:path>")
+def serve_js(path):
+    return send_from_directory(str(FRONTEND_DIR / "js"), path)
+
+@app.route("/fonts/<path:path>")
+def serve_fonts(path):
+    return send_from_directory(str(FRONTEND_DIR / "fonts"), path)
+
+@app.route("/public/<path:path>")
+def serve_public(path):
+    return send_from_directory(str(FRONTEND_DIR / "public"), path)
 
 _graph = None
 

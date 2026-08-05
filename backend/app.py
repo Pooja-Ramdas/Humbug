@@ -22,12 +22,15 @@ import uuid
 import sqlite3
 import logging
 import threading
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
 import networkx as nx
 from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Add repo root to path so we can import detection, build_graph, telemetry_sim
@@ -578,9 +581,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Humbug", version="1.0.0", lifespan=lifespan)
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+if (FRONTEND_DIR / "css").exists():
+    app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
+
+if (FRONTEND_DIR / "js").exists():
+    app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
+
+if (FRONTEND_DIR / "fonts").exists():
+    app.mount("/fonts", StaticFiles(directory=str(FRONTEND_DIR / "fonts")), name="fonts")
+
+if (FRONTEND_DIR / "public").exists():
+    app.mount("/public", StaticFiles(directory=str(FRONTEND_DIR / "public")), name="public")
+
+
 @app.get("/")
-def root():
+async def index():
+    if (FRONTEND_DIR / "index.html").exists():
+        return FileResponse(FRONTEND_DIR / "index.html")
     return {"status": "Humbug backend is running"}
+
 
 app.add_middleware(
     CORSMiddleware,

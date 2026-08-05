@@ -19,6 +19,9 @@ COPY generate_data.py  /app/generate_data.py
 # Copy data directory (seed DB + CSVs)
 COPY data/ /app/data/
 
+# Copy frontend static files for single-service deployment
+COPY frontend/ /app/frontend/
+
 # Startup script: generates fresh DB if not present, then starts uvicorn
 COPY backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

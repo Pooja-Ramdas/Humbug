@@ -9,17 +9,7 @@
  * against the 120s p95 detection-to-UI target.
  */
 
-const API_BASE = window.HUMBUG_API_BASE || (() => {
-  url = 'https://humbug.onrender.com';
-  // local_url 
-  // url = 'http://localhost:8000';
-  if (window.location.protocol === 'file:') return url;
-  // If served via Nginx proxy (e.g. port 80 or standard reverse proxy setup)
-  if (window.location.port === '' || window.location.port === '80' || window.location.port === '443') {
-    return window.location.origin + '/api';
-  }
-  return url;
-})();
+const API_BASE = window.HUMBUG_API_BASE || (window.location.protocol === 'file:' ? 'http://localhost:8000' : '');
 
 // ─── Internal fetch wrapper ───────────────────────────────────────────────
 

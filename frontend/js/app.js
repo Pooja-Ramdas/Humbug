@@ -66,10 +66,13 @@
 
   // ─── Header stats ──────────────────────────────────────────────────────
   function updateHeaderStats(stats) {
-    const tickets = document.getElementById('hdr-open-tickets');
+    const faultEl = document.getElementById('hdr-open-tickets');
     const poles   = document.getElementById('hdr-pole-count');
-    if (tickets) tickets.textContent = stats.open_tickets ?? '—';
-    if (poles)   poles.textContent   = stats.pole_count   ?? '—';
+    // Display active fault locations count (not red pole count)
+    const activeFaults = stats.active_fault_count ?? stats.open_tickets ?? 0;
+    if (faultEl) faultEl.textContent = activeFaults;
+    if (poles)   poles.textContent   = stats.pole_count ?? '\u2014';
+    updateHealthBadge(activeFaults, true);
   }
 
   // ─── Tickets badge ─────────────────────────────────────────────────────
@@ -81,10 +84,10 @@
     badge.classList.toggle('zero', open === 0);
   }
 
-  // ─── Boot sequence ─────────────────────────────────────────────────────
+  // ─── Boot sequence ─────────────────────────────────────────────────
   async function boot() {
     // 1. Mount map
-    HumbugMap.init('map-container');
+    HumbugMap.init('map-container', { preferCanvas: true });
 
     // Load transformers so we can register their positions for edge drawing
     try {
@@ -94,16 +97,33 @@
       console.warn('Could not load transformers:', e.message);
     }
 
-    // 2. Mount simulator panel
+    // 2. Load static topology ONCE — positions, DT/feeder/ward/pincode never change.
+    //    This initialises all 2700+ markers; subsequent polls only update colors.
+    try {
+      const topology = await Api.getNetworkTopology();
+      HumbugMap.initTopology(topology);
+    } catch (e) {
+      console.warn('Could not load topology; falling back to /poles:', e.message);
+      // Fallback: use the old /poles endpoint so map still renders if new endpoint missing
+      try {
+        const poles = await Api.getPoles();
+        HumbugMap.updatePoles(poles);
+      } catch (e2) {
+        console.warn('Could not load poles either:', e2.message);
+      }
+    }
+
+    // 3. Mount simulator panel
     HumbugSimulator.render('simulator-body');
 
-    // 3. Mount ticket list + drawer
+    // 4. Mount ticket list + drawer
     HumbugTickets.render('tickets-list-body', 'drawer-body');
 
-    // 4. Subscribe to poller channels
-
-    HumbugPoller.subscribe('poles', (poles) => {
-      HumbugMap.updatePoles(poles);
+    // 5. Subscribe to poller channels
+    //    poleStatuses is a lightweight {pole_id: status} dict polled every 3s —
+    //    map.js only calls setStyle on markers whose status changed, not re-render all.
+    HumbugPoller.subscribe('poleStatuses', (statuses) => {
+      HumbugMap.updatePoleStatuses(statuses);
     });
 
     HumbugPoller.subscribe('edges', (edges) => {
@@ -116,7 +136,6 @@
 
     HumbugPoller.subscribe('tickets', (tickets) => {
       updateTicketsBadge(tickets);
-      // Get latest pole data for fault highlight (cached from last fast poll)
       HumbugMap.updateFaultHighlights(tickets, []);
     });
 
@@ -131,7 +150,7 @@
       }
     });
 
-    // 5. Start polling
+    // 6. Start polling
     HumbugPoller.start();
 
     // Initial edge load
@@ -144,6 +163,7 @@
 
     console.log('[Humbug] Boot complete. Polling started.');
   }
+
 
   // Wait for DOM
   if (document.readyState === 'loading') {

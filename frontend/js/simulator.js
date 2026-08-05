@@ -153,7 +153,7 @@ window.HumbugSimulator = (() => {
           type: 'submit',
           className: 'btn btn-danger',
           disabled: !targetId || submitting,
-        }, submitting ? h('span', { className: 'spinner' }) : '⚡ Inject Fault')
+        }, submitting ? h('span', { className: 'spinner' }) : '\u26A1 Inject Fault')
       )
     );
   }
@@ -180,7 +180,7 @@ window.HumbugSimulator = (() => {
         style: { fontSize: '11px', padding: '4px 10px' },
         disabled: repairing,
         onClick: handleRepair,
-      }, repairing ? h('span', { className: 'spinner' }) : '✓ Repair')
+      }, repairing ? h('span', { className: 'spinner' }) : '\u2713 Repair')
     );
   }
 
@@ -222,7 +222,7 @@ window.HumbugSimulator = (() => {
         style: { fontSize: '11px', padding: '4px 10px' },
         disabled: ending,
         onClick: handleEnd,
-      }, ending ? h('span', { className: 'spinner' }) : '✕ End Early')
+      }, ending ? h('span', { className: 'spinner' }) : '\u25A0 End Early')
     );
   }
 
@@ -231,6 +231,8 @@ window.HumbugSimulator = (() => {
     const [scope, setScope] = useState('dt');
     const [targetId, setTargetId] = useState('');
     const [duration, setDuration] = useState('60');
+    const [startType, setStartType] = useState('instant');
+    const [startOffset, setStartOffset] = useState('10');
     const [submitting, setSubmitting] = useState(false);
 
     useEffect(() => {
@@ -242,18 +244,13 @@ window.HumbugSimulator = (() => {
       if (scope === 'feeder') {
         return feeders.map(f => ({
           id: f.feeder_id,
-          sub: `Substation ${f.substation_id} · ${f.lat?.toFixed(4)}°N ${f.lon?.toFixed(4)}°E`,
+          sub: `Substation ${f.substation_id} \u00b7 ${f.lat?.toFixed(4)}\u00b0N ${f.lon?.toFixed(4)}\u00b0E`,
         }));
       }
-      if (scope === 'dt') {
-        return transformers.map(t => ({
-          id: t.dt_id,
-          sub: `${t.feeder_id} · ${t.capacity_kva}kVA · ${t.households_served} households`,
-        }));
-      }
-      return poles.map(p => ({
-        id: p.pole_id,
-        sub: `${p.dt_id} · seq ${p.seq_on_line || '?'} · ${p.lat?.toFixed(5)}°N`,
+      // dt scope
+      return transformers.map(t => ({
+        id: t.dt_id,
+        sub: `${t.feeder_id} \u00b7 ${t.capacity_kva}kVA \u00b7 ${t.households_served} households`,
       }));
     })();
 
@@ -261,9 +258,13 @@ window.HumbugSimulator = (() => {
       e.preventDefault();
       if (!targetId) { showToast('Select a target first', 'warn'); return; }
       setSubmitting(true);
+      const delay = startType === 'scheduled' ? parseInt(startOffset) : 0;
       try {
-        await Api.simulateLoadShed(scope, targetId, parseInt(duration));
-        showToast(`Load shedding scheduled for ${targetId}`, 'success');
+        await Api.simulateLoadShed(scope, targetId, parseInt(duration), delay);
+        const msg = delay > 0 
+          ? `Load shedding scheduled in ${delay} mins for ${targetId}`
+          : `Load shedding started for ${targetId}`;
+        showToast(msg, 'success');
         
         // Trigger manual detection refresh
         await Api.triggerDetection().catch(() => {});
@@ -276,7 +277,9 @@ window.HumbugSimulator = (() => {
       }
     }
 
-    const scopeLabels = { pole: 'Single Pole', dt: 'Whole Transformer (DT)', feeder: 'Feeder Line' };
+    // Load shedding is feeder/DT level only — individual pole level is not physically valid.
+    // Real-world load shedding is always controlled at feeder breakers or substation level.
+    const scopeLabels = { dt: 'Whole Transformer (DT)', feeder: 'Feeder Line' };
 
     return h('form', { onSubmit: handleSubmit },
       h('div', { className: 'form-group' },
@@ -303,18 +306,41 @@ window.HumbugSimulator = (() => {
       ),
 
       h('div', { className: 'form-group' },
-        h('label', { className: 'form-label' }, 'Duration'),
-        h('select', {
-          className: 'form-select',
+        h('label', { className: 'form-label' }, 'Duration (minutes)'),
+        h('input', {
+          type: 'number',
+          className: 'form-input',
+          min: '1',
           value: duration,
           onChange: e => setDuration(e.target.value),
+          placeholder: 'Enter duration in minutes...',
+          required: true,
+        })
+      ),
+
+      h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Timing'),
+        h('select', {
+          className: 'form-select',
+          value: startType,
+          onChange: e => setStartType(e.target.value),
         },
-          h('option', { value: '15' }, '15 Minutes'),
-          h('option', { value: '30' }, '30 Minutes'),
-          h('option', { value: '60' }, '1 Hour'),
-          h('option', { value: '120' }, '2 Hours'),
-          h('option', { value: '240' }, '4 Hours')
+          h('option', { value: 'instant' }, 'Start now'),
+          h('option', { value: 'scheduled' }, 'Schedule for later')
         )
+      ),
+
+      startType === 'scheduled' && h('div', { className: 'form-group' },
+        h('label', { className: 'form-label' }, 'Start Offset (minutes from now)'),
+        h('input', {
+          type: 'number',
+          className: 'form-input',
+          min: '1',
+          value: startOffset,
+          onChange: e => setStartOffset(e.target.value),
+          placeholder: 'Enter start offset in minutes...',
+          required: true,
+        })
       ),
 
       h('div', { className: 'dialog-footer', style: { padding: '16px 0 0 0', marginTop: '16px', borderTop: '1px solid var(--border-dim)' } },
@@ -323,7 +349,7 @@ window.HumbugSimulator = (() => {
           type: 'submit',
           className: 'btn btn-warn',
           disabled: !targetId || submitting,
-        }, submitting ? h('span', { className: 'spinner' }) : '🕐 Confirm Outage')
+        }, submitting ? h('span', { className: 'spinner' }) : '\u29D6 Confirm Outage')
       )
     );
   }
@@ -364,9 +390,9 @@ window.HumbugSimulator = (() => {
       }
     }
 
-    const noiseLabels = { 
-      device_death: '📡 Dead device modem (loss of heartbeat)', 
-      duplicate_burst: '♻ Duplicate burst (at-least-once retry storm)' 
+    const noiseLabels = {
+      device_death:    '[x] Dead device modem (loss of heartbeat)',
+      duplicate_burst: '[~] Duplicate burst (at-least-once retry storm)',
     };
 
     return h('form', { onSubmit: handleSubmit },
@@ -399,7 +425,7 @@ window.HumbugSimulator = (() => {
           type: 'submit',
           className: 'btn btn-primary',
           disabled: submitting,
-        }, submitting ? h('span', { className: 'spinner' }) : '⚡ Inject Noise')
+        }, submitting ? h('span', { className: 'spinner' }) : '\u2248 Inject Noise')
       )
     );
   }
@@ -503,15 +529,15 @@ window.HumbugSimulator = (() => {
         h('button', {
           className: 'btn btn-danger w-full',
           onClick: () => setActiveDialog('fault'),
-        }, '⚡ Inject Fault'),
+        }, '\u26A1 Inject Fault'),
         h('button', {
           className: 'btn btn-warn w-full',
           onClick: () => setActiveDialog('load_shed'),
-        }, '🕐 Schedule Load Shedding'),
+        }, '\u29D6 Schedule Load Shedding'),
         h('button', {
           className: 'btn btn-primary w-full',
           onClick: () => setActiveDialog('noise'),
-        }, '📡 Inject Telemetry Noise')
+        }, '\u2248 Inject Telemetry Noise')
       ),
 
       activeFaults.length > 0 && h('div', { className: 'active-faults-list' },

@@ -26,7 +26,7 @@
   <!-- HEADER ─────────────────────────────────────────────── -->
   <header id="app-header">
     <div class="header-left">
-      <span class="logo-glyph">⬡</span>
+      <canvas id="logo-3d" width="44" height="44" style="display:block;flex-shrink:0;"></canvas>
       <span class="logo-name">HUMBUG</span>
       <span class="logo-sub">/ fault operations console</span>
     </div>
@@ -39,7 +39,7 @@
     <div class="header-right">
       <div class="header-stat">
         <span class="stat-value" id="hdr-open-tickets">–</span>
-        <span class="stat-label">OPEN FAULTS</span>
+        <span class="stat-label">ACTIVE FAULTS</span>
       </div>
       <div class="header-stat">
         <span class="stat-value" id="hdr-pole-count">–</span>
@@ -60,10 +60,11 @@
     <section id="map-panel">
       <div id="map-container"></div>
       <div id="map-legend">
-        <div class="legend-item"><span class="legend-dot dot-normal"></span>Energized</div>
-        <div class="legend-item"><span class="legend-dot dot-fault"></span>Fault</div>
+      <div class="legend-item"><span class="legend-dot dot-normal"></span>Energized / OK</div>
+        <div class="legend-item"><span class="legend-dot dot-fault"></span>Fault (power lost)</div>
         <div class="legend-item"><span class="legend-dot dot-load-shedding"></span>Load shedding</div>
-        <div class="legend-item"><span class="legend-dot dot-unknown"></span>No device</div>
+        <div class="legend-item"><span class="legend-dot dot-unknown"></span>No device fitted</div>
+        <div class="legend-item"><span class="legend-dot dot-unknown" style="border-color:var(--c-unknown);opacity:0.6"></span>Device fault (IoT)</div>
         <div class="legend-item"><span class="legend-line line-span"></span>Known topology</div>
         <div class="legend-item"><span class="legend-line line-inferred"></span>Inferred topology</div>
       </div>
@@ -139,11 +140,15 @@
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 
+<!-- Three.js for 3D logo -->
+<script src="https://unpkg.com/three@0.163.0/build/three.min.js"></script>
+
 <!-- App modules — loaded in dependency order -->
 <script src="js/api.js"></script>
 <script src="js/map.js"></script>
 <script src="js/tickets.js"></script>
 <script src="js/simulator.js"></script>
+<script src="js/logo.js"></script>
 <script src="js/app.js"></script>
 
 </body>

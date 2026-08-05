@@ -48,6 +48,9 @@ def ensure_runtime_tables():
         received_at REAL,
         UNIQUE(device_id, seq, event)
     )""")
+    # Indexes for fast pole-level and time-based lookups in detection + sim
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tel_pole ON telemetry(pole_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tel_ts   ON telemetry(ts)")
     cur.execute("""CREATE TABLE IF NOT EXISTS device_last_seen (
         device_id TEXT PRIMARY KEY, ts REAL
     )""")
@@ -85,6 +88,7 @@ def ensure_runtime_tables():
     con.close()
 
 
+
 ensure_runtime_tables()
 
 
@@ -107,6 +111,47 @@ def ingest_batch(con, events):
     con.commit()
 
 
+_static_topology_cache = None
+_static_edges_cache = None
+
+def get_static_topology():
+    global _static_topology_cache
+    if _static_topology_cache is None:
+        con = get_db()
+        cur = con.cursor()
+        nodes = []
+        for r in cur.execute("SELECT pole_id, lat, lon, dt_id, ward, pincode, device_id FROM pole_registry"):
+            nodes.append({
+                "id": r["pole_id"], "type": "pole", "lat": r["lat"], "lon": r["lon"],
+                "dt_id": r["dt_id"], "ward": r["ward"], "pincode": r["pincode"],
+                "has_device": r["device_id"] is not None,
+            })
+        for r in cur.execute("SELECT dt_id, lat, lon, households_served FROM transformer_registry"):
+            nodes.append({"id": r["dt_id"], "type": "dt", "lat": r["lat"], "lon": r["lon"],
+                           "households_served": r["households_served"]})
+        for r in cur.execute("SELECT feeder_id, lat, lon FROM feeders"):
+            nodes.append({"id": r["feeder_id"], "type": "feeder", "lat": r["lat"], "lon": r["lon"]})
+        for r in cur.execute("SELECT substation_id, lat, lon FROM substations"):
+            nodes.append({"id": r["substation_id"], "type": "substation", "lat": r["lat"], "lon": r["lon"]})
+        con.close()
+        _static_topology_cache = nodes
+    return _static_topology_cache
+
+def get_static_edges():
+    global _static_edges_cache
+    if _static_edges_cache is None:
+        G = get_graph()
+        edges = []
+        for u, v, d in G.edges(data=True):
+            un, vn = G.nodes[u], G.nodes[v]
+            edges.append({"from": u, "to": v, "edge_type": d.get("edge_type"),
+                           "from_lat": un["lat"], "from_lon": un["lon"],
+                           "to_lat": vn["lat"], "to_lon": vn["lon"]})
+        _static_edges_cache = edges
+    return _static_edges_cache
+
+
+@app.route("/ingest", methods=["POST"])
 @app.route("/api/ingest", methods=["POST"])
 def api_ingest():
     """Real device-facing endpoint. Accepts one event or a list of events
@@ -117,6 +162,110 @@ def api_ingest():
     ingest_batch(con, events)
     con.close()
     return jsonify({"ingested": len(events)})
+
+
+@app.route("/network/topology")
+@app.route("/api/network/topology")
+def api_network_topology():
+    return jsonify(get_static_topology())
+
+
+@app.route("/network/status")
+@app.route("/api/network/status")
+def api_network_status():
+    con = get_db()
+    G = get_graph()
+    statuses = detection.run_detection_pass(con, G)
+    con.close()
+    return jsonify(statuses)
+
+
+@app.route("/network/edges")
+@app.route("/api/network/edges")
+def api_network_edges():
+    return jsonify(get_static_edges())
+
+
+@app.route("/stats")
+@app.route("/api/stats")
+def api_stats():
+    con = get_db()
+    G = get_graph()
+    statuses = detection.run_detection_pass(con, G)
+    cur = con.cursor()
+    open_t = cur.execute("SELECT COUNT(*) FROM tickets WHERE status NOT IN ('verified','closed')").fetchone()[0]
+    pole_c = cur.execute("SELECT COUNT(*) FROM pole_registry").fetchone()[0]
+    fault_c = sum(1 for s in statuses.values() if s == "fault")
+    active_f_c = detection.count_active_faults(statuses, G)
+    con.close()
+    return jsonify({
+        "open_tickets": open_t,
+        "pole_count": pole_c,
+        "fault_pole_count": fault_c,
+        "active_fault_count": active_f_c,
+    })
+
+
+@app.route("/health")
+@app.route("/api/health")
+def api_health():
+    con = get_db()
+    G = get_graph()
+    statuses = detection.run_detection_pass(con, G)
+    cur = con.cursor()
+    open_t = cur.execute("SELECT COUNT(*) FROM tickets WHERE status NOT IN ('verified','closed')").fetchone()[0]
+    pole_c = cur.execute("SELECT COUNT(*) FROM pole_registry").fetchone()[0]
+    con.close()
+    return jsonify({
+        "status": "ok",
+        "pole_count": pole_c,
+        "open_tickets": open_t,
+        "connected": True
+    })
+
+
+@app.route("/poles")
+@app.route("/api/poles")
+def api_poles():
+    con = get_db()
+    G = get_graph()
+    statuses = detection.run_detection_pass(con, G)
+    cur = con.cursor()
+    rows = cur.execute("SELECT pole_id, lat, lon, dt_id, feeder_id, ward, pincode, device_id, seq_on_line, parent_pole_id FROM pole_registry").fetchall()
+    con.close()
+    res = []
+    for r in rows:
+        d = dict(r)
+        d["status"] = statuses.get(r["pole_id"], "unknown")
+        res.append(d)
+    return jsonify(res)
+
+
+@app.route("/transformers")
+@app.route("/api/transformers")
+def api_transformers():
+    con = get_db()
+    rows = con.execute("SELECT dt_id, feeder_id, lat, lon, capacity_kva, households_served FROM transformer_registry").fetchall()
+    con.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/feeders")
+@app.route("/api/feeders")
+def api_feeders():
+    con = get_db()
+    rows = con.execute("SELECT feeder_id, substation_id, lat, lon FROM feeders").fetchall()
+    con.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/substations")
+@app.route("/api/substations")
+def api_substations():
+    con = get_db()
+    rows = con.execute("SELECT substation_id, lat, lon FROM substations").fetchall()
+    con.close()
+    return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/network")
@@ -155,6 +304,7 @@ def api_network():
     return jsonify({"nodes": nodes, "edges": edges})
 
 
+@app.route("/poles/search")
 @app.route("/api/poles/search")
 def api_pole_search():
     q = request.args.get("q", "").strip()
@@ -173,11 +323,13 @@ def api_pole_search():
     return jsonify([{"pole_id": r["pole_id"], "dt_id": r["dt_id"], "ward": r["ward"]} for r in rows])
 
 
+@app.route("/simulate/fault", methods=["POST"])
+@app.route("/api/simulate/fault", methods=["POST"])
 @app.route("/api/simulate-fault", methods=["POST"])
 def api_simulate_fault():
     body = request.get_json(force=True)
     target_id = body.get("target_id")
-    scope = body.get("scope", "pole")
+    scope = body.get("scope") or body.get("type") or "pole"
 
     G = get_graph()
     if target_id not in G:
@@ -207,6 +359,7 @@ def api_simulate_fault():
     })
 
 
+@app.route("/tickets")
 @app.route("/api/tickets")
 def api_tickets():
     con = get_db()
@@ -215,23 +368,76 @@ def api_tickets():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/tickets/<ticket_id>")
+@app.route("/api/tickets/<ticket_id>")
+def api_ticket_detail(ticket_id):
+    con = get_db()
+    row = con.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+    con.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(dict(row))
+
+
+@app.route("/tickets/<ticket_id>/acknowledge", methods=["POST"])
+@app.route("/api/tickets/<ticket_id>/acknowledge", methods=["POST"])
+def api_ticket_ack(ticket_id):
+    con = get_db()
+    now = time.time()
+    con.execute("UPDATE tickets SET status='acknowledged', acknowledged_at=? WHERE id=?", (now, ticket_id))
+    con.commit()
+    con.close()
+    return jsonify({"status": "acknowledged"})
+
+
+@app.route("/tickets/<ticket_id>/assign-crew", methods=["POST"])
+@app.route("/api/tickets/<ticket_id>/assign-crew", methods=["POST"])
+def api_ticket_crew(ticket_id):
+    con = get_db()
+    now = time.time()
+    con.execute("UPDATE tickets SET status='crew_assigned', crew_assigned_at=? WHERE id=?", (now, ticket_id))
+    con.commit()
+    con.close()
+    return jsonify({"status": "crew_assigned"})
+
+
+@app.route("/tickets/<ticket_id>/resolve", methods=["POST"])
+@app.route("/api/tickets/<ticket_id>/resolve", methods=["POST"])
+def api_ticket_resolve(ticket_id):
+    con = get_db()
+    now = time.time()
+    con.execute("UPDATE tickets SET status='resolved', resolved_at=? WHERE id=?", (now, ticket_id))
+    con.commit()
+    con.close()
+    return jsonify({"status": "resolved"})
+
+
+@app.route("/simulate/restore", methods=["POST"])
+@app.route("/api/simulate/restore", methods=["POST"])
 @app.route("/api/simulate-restore", methods=["POST"])
 def api_simulate_restore():
     body = request.get_json(force=True)
     target_id = body.get("target_id")
-    scope = body.get("type")
+    scope = body.get("type") or body.get("scope") or "pole"
     
     con = get_db()
     G = get_graph()
     result = telemetry_sim.inject_restore_telemetry(con, scope, target_id, G)
     
-    # Mark active fault as restored
     cur = con.cursor()
-    cur.execute(
-        "UPDATE active_faults SET restored=1 WHERE target_id=? AND fault_type=? AND restored=0",
-        (target_id, scope)
-    )
-    con.commit()
+    now = time.time()
+    try:
+        cur.execute(
+            "UPDATE tickets SET status='closed', verified_at=?, closed_at=? WHERE status NOT IN ('closed')",
+            (now, now)
+        )
+        cur.execute(
+            "UPDATE active_faults SET restored=1 WHERE target_id=? AND fault_type=? AND restored=0",
+            (target_id, scope)
+        )
+        con.commit()
+    except Exception:
+        pass
     
     detection.run_detection_pass(con, G)
     con.commit()
@@ -241,17 +447,30 @@ def api_simulate_restore():
 
 @app.route("/api/simulate-load-shed", methods=["POST"])
 def api_simulate_load_shed():
+    """
+    Schedule a load-shedding outage window.
+
+    IMPORTANT: We do NOT backdate device_last_seen here.
+    Load shedding is a *planned, controlled* outage — detection derives
+    load_shed status by checking scheduled_outages, NOT telemetry staleness.
+    Backdating last_seen causes the corroboration pass in detection to promote
+    upstream siblings to 'fault', which is the bug that made upstream poles red.
+
+    Real-world: only poles downstream of / under the target zone go dark.
+    Upstream poles (closer to substation) remain energized and unaffected.
+    """
     body = request.get_json(force=True)
     target_id = body.get("target_id")
     scope = body.get("scope")
     duration_minutes = int(body.get("duration_minutes", 60))
-    
+    start_delay_minutes = int(body.get("start_delay_minutes", 0))
+
     import uuid
     outage_id = f"SO-SIM-{uuid.uuid4().hex[:8]}"
     now = time.time()
-    start_ts = now
-    end_ts = now + duration_minutes * 60
-    
+    start_ts = now + start_delay_minutes * 60
+    end_ts = start_ts + duration_minutes * 60
+
     con = get_db()
     cur = con.cursor()
     cur.execute(
@@ -259,26 +478,15 @@ def api_simulate_load_shed():
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (outage_id, scope, target_id, start_ts, end_ts, "active", f"Load shedding ({duration_minutes} mins)")
     )
-    
-    # Backdate affected devices so they appear dark
-    G = get_graph()
-    affected = telemetry_sim.get_poles_for_target(con, scope, target_id, G)
-    stale_ts = now - telemetry_sim.STALE_THRESHOLD_S - 10
-    for pole in affected:
-        d_id = pole.get("device_id")
-        p_id = pole.get("pole_id")
-        if d_id:
-            cur.execute(
-                "INSERT INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?) "
-                "ON CONFLICT(device_id) DO UPDATE SET ts=?",
-                (d_id, stale_ts, p_id, stale_ts)
-            )
     con.commit()
-    
+
+    # Run detection so the map immediately reflects yellow load_shed status.
+    # Detection reads scheduled_outages — no telemetry manipulation needed.
+    G = get_graph()
     detection.run_detection_pass(con, G)
     con.commit()
     con.close()
-    
+
     return jsonify({"id": outage_id, "status": "active", "end_ts": end_ts})
 
 

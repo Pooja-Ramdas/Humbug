@@ -25,11 +25,12 @@ const HumbugMap = (() => {
 
   // Colours match theme.css
   const COLORS = {
-    normal:       '#39ff14',
-    fault:        '#ff0055',
-    load_shedding:'#ffe600',
-    load_shed:    '#ffe600',
-    unknown:      '#8a8a8a',
+    normal:        '#39ff14',
+    fault:         '#ff0055',
+    load_shedding: '#ffe600',
+    load_shed:     '#ffe600',
+    unknown:       '#8a8a8a',
+    device_fault:  '#8a8a8a',  // grey — IoT/device issue, not a line fault
   };
 
   function _getDynamicRadius(status, zoom) {
@@ -43,12 +44,13 @@ const HumbugMap = (() => {
     return Math.max(1.5, Math.min(15, radius));
   }
 
-  function init(containerId) {
+  function init(containerId, opts) {
     _map = L.map(containerId, {
       center: [12.9716, 77.5946],  // Bangalore city centre
       zoom: 13,
       zoomControl: true,
       attributionControl: true,
+      preferCanvas: true,   // Canvas rendering: ~10x faster than SVG for 2700+ markers
     });
 
     // CartoDB dark_matter — free, keyless, matches our dark theme
@@ -113,6 +115,7 @@ const HumbugMap = (() => {
       case 'load_shedding':
         return { ...base, radius: r, color: '#cca700', fillColor: COLORS.load_shedding };
       case 'unknown':
+      case 'device_fault':  // IoT device failure — grey, dashed, same as no-device
       default:
         return { ...base, radius: r, color: '#8a8a8a', fillColor: 'transparent',
                  fillOpacity: 0, dashArray: '3 2' };
@@ -122,8 +125,11 @@ const HumbugMap = (() => {
   function _polePopupHtml(pole) {
     const statusClass = `status-${pole.status}`;
     const lastSeen = pole.last_seen ? fmtAge(pole.last_seen) : 'never';
-    const statusText = (pole.status === 'load_shedding' || pole.status === 'load_shed') ? 'Load shedding'
-                     : pole.status === 'unknown' ? 'No device' : pole.status;
+    const statusText =
+      (pole.status === 'load_shedding' || pole.status === 'load_shed') ? 'Load shedding'
+      : pole.status === 'unknown'      ? 'No device fitted'
+      : pole.status === 'device_fault' ? 'Device fault (IoT)'
+      : pole.status;
 
     let outageInfoHtml = '';
     if (pole.status === 'load_shed' || pole.status === 'load_shedding') {
@@ -157,6 +163,75 @@ const HumbugMap = (() => {
       </table>
       ${outageInfoHtml}
     </div>`;
+  }
+
+  // ─── Topology init (load-once) ────────────────────────────────────
+  /**
+   * initTopology — called ONCE at page boot from /network/topology.
+   * Creates all pole markers with status='normal' (grey for no-device poles).
+   * Subsequent status updates go through updatePoleStatuses() which only
+   * calls setStyle — zero DOM/canvas node creation after this point.
+   */
+  function initTopology(topologyArray) {
+    if (!_map) return;
+    for (const pole of topologyArray) {
+      const status = pole.device_id ? 'normal' : 'unknown';
+      const style = _poleStyle(status);
+      const marker = L.circleMarker([pole.lat, pole.lon], style);
+      marker._humbugStatus = status;
+      marker._humbugPole = pole;  // cache for popup generation
+      marker.bindPopup(() => _polePopupHtml({ ...pole, status: marker._humbugStatus }),
+                       { maxWidth: 220, className: 'humbug-popup' });
+      marker.bindTooltip(pole.pole_id, { direction: 'top', className: 'humbug-tooltip' });
+      marker.on('click', () => marker.openPopup());
+      marker.addTo(_poleLayer);
+      _poleMarkers[pole.pole_id] = marker;
+    }
+
+    // Fit bounds once on first topology load
+    const coords = topologyArray.map(p => [p.lat, p.lon]);
+    if (coords.length > 0 && !_map._hasFitBounds) {
+      _map.fitBounds(L.latLngBounds(coords).pad(0.08), { animate: false });
+      _map._hasFitBounds = true;
+      if (_map.getZoom() < 16) _map.setZoom(16);
+    }
+
+    // Trigger edge rendering if edges already arrived before topology loaded
+    if (Object.keys(_edgeLines).length === 0 && _cachedEdges.length > 0) {
+      updateEdges(_cachedEdges);
+    }
+
+    setTimeout(() => _map.invalidateSize(), 200);
+  }
+
+  /**
+   * updatePoleStatuses — called on every 3s poll with a {pole_id: status} dict.
+   * ONLY calls setStyle on markers whose status actually changed.
+   * Zero marker creation, zero DOM thrashing.
+   */
+  function updatePoleStatuses(statuses) {
+    if (!_map) return;
+    const zoom = _map.getZoom();
+    for (const [pole_id, status] of Object.entries(statuses)) {
+      const marker = _poleMarkers[pole_id];
+      if (!marker) continue;
+      if (marker._humbugStatus === status) continue;  // no change — skip
+      marker._humbugStatus = status;
+      marker.setStyle(_poleStyle(status));
+      // fault-pulse animation class (CSS @keyframes on canvas markers)
+      if (status === 'fault') {
+        marker.getElement && marker.getElement() &&
+          marker.getElement().classList.add('fault-pulse');
+      } else {
+        marker.getElement && marker.getElement() &&
+          marker.getElement().classList.remove('fault-pulse');
+      }
+      // Refresh popup content if it's open
+      if (marker.isPopupOpen && marker.isPopupOpen()) {
+        const pole = marker._humbugPole || {};
+        marker.setPopupContent(_polePopupHtml({ ...pole, status }));
+      }
+    }
   }
 
   let _hasInvalidated = false;
@@ -198,6 +273,7 @@ const HumbugMap = (() => {
         const marker = L.circleMarker([pole.lat, pole.lon], style);
         marker._humbugStatus = pole.status;
         marker.bindPopup(() => _polePopupHtml(pole), { maxWidth: 220, className: 'humbug-popup' });
+        marker.bindTooltip(pole.pole_id, { direction: 'top', className: 'humbug-tooltip' });
         marker.on('click', () => marker.openPopup());
         marker.addTo(_poleLayer);
         _poleMarkers[pole.pole_id] = marker;
@@ -283,19 +359,42 @@ const HumbugMap = (() => {
     for (const ticket of openTickets) {
       (ticket.affected_poles || []).forEach(pid => faultPoleIds.add(pid));
 
-      if (ticket.lat && ticket.lon) {
-        // Pulsing ring at fault centroid
-        const ring = L.circle([ticket.lat, ticket.lon], {
-          radius: 80,
+      // Determine the single initiating (first) faulty pole
+      let initiatingPoleId = ticket.target_id;
+      const affectedPolesList = ticket.affected_poles || (ticket.affected_pole_ids ? ticket.affected_pole_ids.split(',') : []);
+
+      if (affectedPolesList.length > 0) {
+        // Pick the pole with the lowest seq_on_line (or first pole in list if seq not available)
+        let minSeq = Infinity;
+        let firstPole = affectedPolesList[0];
+        for (const pid of affectedPolesList) {
+          const marker = _poleMarkers[pid];
+          const poleData = marker ? (marker._humbugPole || {}) : {};
+          const seq = poleData.seq_on_line;
+          if (seq !== undefined && seq !== null && seq < minSeq) {
+            minSeq = seq;
+            firstPole = pid;
+          }
+        }
+        initiatingPoleId = firstPole || initiatingPoleId;
+      }
+
+      const initMarker = _poleMarkers[initiatingPoleId];
+      const latLng = initMarker ? initMarker.getLatLng() : (ticket.lat && ticket.lon ? L.latLng(ticket.lat, ticket.lon) : null);
+
+      if (latLng) {
+        // Single small, tight dotted circle encircling ONLY the initiating faulty pole
+        const ring = L.circle(latLng, {
+          radius: 12,  // Small tight circle around the single initiating pole
           color: '#ef4444',
           fillColor: '#ef4444',
-          fillOpacity: 0.06,
+          fillOpacity: 0.15,
           weight: 2,
-          dashArray: '6 4',
+          dashArray: '4 4',
           className: 'fault-ring',
         });
         ring.bindTooltip(
-          `${ticket.id} — ${ticket.affected_pole_count || '?'} poles affected`,
+          `Fault Origin: ${initiatingPoleId} (${ticket.id})`,
           { sticky: true }
         );
         ring.on('click', () => {
@@ -349,5 +448,5 @@ const HumbugMap = (() => {
     _activeOutages = outages || [];
   }
 
-  return { init, updatePoles, updateEdges, updateFaultHighlights, flyToTicket, registerTransformer, updateActiveLoadShed, invalidateSize: () => { if (_map) _map.invalidateSize(); } };
+  return { init, initTopology, updatePoles, updatePoleStatuses, updateEdges, updateFaultHighlights, flyToTicket, registerTransformer, updateActiveLoadShed, invalidateSize: () => { if (_map) _map.invalidateSize(); } };
 })();

@@ -44,6 +44,10 @@ const Api = {
   getPoles:     () => apiFetch('/poles'),
   getPole:      (id) => apiFetch(`/poles/${id}`),
 
+  // Topology split: load topology once, poll status only
+  getNetworkTopology: () => apiFetch('/network/topology'),
+  getNetworkStatus:   () => apiFetch('/network/status'),
+
   getEdges:     () => apiFetch('/network/edges'),
   getTransformers: () => apiFetch('/transformers'),
   getFeeders:   () => apiFetch('/feeders'),
@@ -78,10 +82,10 @@ const Api = {
       method: 'POST',
       body: JSON.stringify({ scope, target_id, start_ts, end_ts, reason }),
     }),
-  simulateLoadShed: (scope, target_id, duration_minutes) =>
+  simulateLoadShed: (scope, target_id, duration_minutes, start_delay_minutes) =>
     apiFetch('/api/simulate-load-shed', {
       method: 'POST',
-      body: JSON.stringify({ scope, target_id, duration_minutes }),
+      body: JSON.stringify({ scope, target_id, duration_minutes, start_delay_minutes }),
     }),
   getActiveLoadShed: () => apiFetch('/api/active-load-shed'),
   endLoadShed: (id) => apiFetch(`/api/end-load-shed/${id}`, { method: 'POST', body: '{}' }),
@@ -129,21 +133,22 @@ const HumbugPoller = (() => {
     });
 
     try {
-      const [poles, tickets, stats, activeFaults, activeLoadShed] = await Promise.all([
-        safeFetch(Api.getPoles()),
+      const [poleStatuses, tickets, stats, activeFaults, activeLoadShed] = await Promise.all([
+        // Poll only the lightweight status dict — topology is loaded once at boot
+        safeFetch(Api.getNetworkStatus()),
         safeFetch(Api.getTickets()),
         safeFetch(Api.stats()),
         safeFetch(Api.getActiveFaults(), []),
         safeFetch(Api.getActiveLoadShed(), []),
       ]);
 
-      if (poles) emit('poles', poles);
+      if (poleStatuses) emit('poleStatuses', poleStatuses);
       if (tickets) emit('tickets', tickets);
       if (stats) emit('stats', stats);
       if (activeFaults) emit('activeFaults', activeFaults);
       if (activeLoadShed) emit('activeLoadShed', activeLoadShed);
-      
-      emit('connected', poles !== null);
+
+      emit('connected', poleStatuses !== null);
     } catch (err) {
       console.warn('[poller:fast]', err.message);
       emit('connected', false);

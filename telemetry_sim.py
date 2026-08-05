@@ -102,7 +102,7 @@ def get_poles_for_target(con: sqlite3.Connection, fault_type: str,
         affected = [dict(zip(["pole_id","device_id","lat","lon","dt_id","feeder_id"], r))
                     for r in rows]
 
-    elif fault_type == "span":
+    elif fault_type in ("span", "pole"):
         # target_id is a pole_id; we darken that pole and everything downstream of it.
         # Use graph topology if available, otherwise fall back to DT-level.
         if graph is not None:
@@ -148,14 +148,19 @@ def inject_fault_telemetry(con: sqlite3.Connection, fault_type: str,
 
     cur = con.cursor()
 
-    # Get current seq numbers per pole
-    seq_map: Dict[str, int] = {}
-    for pole in affected:
-        row = cur.execute(
-            "SELECT MAX(seq) FROM telemetry WHERE pole_id = ?",
-            (pole["pole_id"],)
-        ).fetchone()
-        seq_map[pole["pole_id"]] = (row[0] or 0) + 1
+    # Batch-fetch current MAX(seq) for all affected poles in ONE query
+    # instead of N separate queries — eliminates the N+1 latency for large faults.
+    all_pole_ids = [p["pole_id"] for p in affected]
+    placeholders = ",".join("?" * len(all_pole_ids))
+    seq_rows = cur.execute(
+        f"SELECT pole_id, MAX(seq) as max_seq FROM telemetry WHERE pole_id IN ({placeholders}) GROUP BY pole_id",
+        all_pole_ids
+    ).fetchall()
+    seq_map: Dict[str, int] = {r[0]: (r[1] or 0) + 1 for r in seq_rows}
+    # Poles with no telemetry history default to seq=1
+    for p in affected:
+        if p["pole_id"] not in seq_map:
+            seq_map[p["pole_id"]] = 1
 
     messages_generated = 0
     messages_lost = 0
@@ -226,6 +231,7 @@ def inject_fault_telemetry(con: sqlite3.Connection, fault_type: str,
     }
 
 
+
 def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
                               target_id: str, graph=None) -> Dict[str, Any]:
     """
@@ -244,59 +250,64 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
     messages_generated = 0
     now = time.time()  # single real timestamp — no skew, always after fault events
 
+    # Batch-fetch MAX(seq) for all poles in one query
+    all_pole_ids = [p["pole_id"] for p in affected]
+    placeholders = ",".join("?" * len(all_pole_ids))
+    seq_rows = cur.execute(
+        f"SELECT pole_id, MAX(seq) as max_seq FROM telemetry WHERE pole_id IN ({placeholders}) GROUP BY pole_id",
+        all_pole_ids
+    ).fetchall()
+    seq_map: Dict[str, int] = {r[0]: (r[1] or 0) + 1 for r in seq_rows}
+    for p in affected:
+        if p["pole_id"] not in seq_map:
+            seq_map[p["pole_id"]] = 1
+
     for pole in affected:
         device_id = pole.get("device_id")
-        if not device_id:
-            continue
-
-        # Realistically imperfect restoration telemetry:
-        # 15% of restoration messages are lost in transit.
-        if random.random() > 0.85:
-            continue
-
-        fw = _random_fw(device_id)
         pole_id = pole["pole_id"]
 
-        row = cur.execute(
-            "SELECT MAX(seq) FROM telemetry WHERE pole_id = ?", (pole_id,)
-        ).fetchone()
-        seq = (row[0] or 0) + 1
+        if device_id:
+            # Clear old power_lost telemetry events for restored poles
+            cur.execute("DELETE FROM telemetry WHERE pole_id = ? AND event = 'power_lost'", (pole_id,))
 
-        # boot event — real timestamp + offset to guarantee newer than any skewed fault event
-        boot_event = {
-            "id": str(uuid.uuid4()), "pole_id": pole_id, "device_id": device_id,
-            "event": "boot", "energized": True, "ts": now + random.uniform(10.0, 12.0),
-            "seq": seq, "battery_mv": random.randint(3400, 3700),
-            "rssi": random.randint(-100, -65), "fw": fw, "received_at": now,
-        }
-        cur.execute(
-            "INSERT INTO telemetry (id, pole_id, device_id, event, energized, "
-            "ts, seq, battery_mv, rssi, fw, received_at) VALUES "
-            "(:id,:pole_id,:device_id,:event,:energized,:ts,:seq,:battery_mv,:rssi,:fw,:received_at)",
-            boot_event
-        )
+            fw = _random_fw(device_id)
+            seq = seq_map.get(pole_id, 1)
 
-        # power_restored event — slightly after boot
-        restored_event = {
-            "id": str(uuid.uuid4()), "pole_id": pole_id, "device_id": device_id,
-            "event": "power_restored", "energized": True,
-            "ts": now + random.uniform(13.0, 15.0),
-            "seq": seq + 1, "battery_mv": random.randint(3400, 3700),
-            "rssi": random.randint(-100, -65), "fw": fw, "received_at": now,
-        }
-        cur.execute(
-            "INSERT INTO telemetry (id, pole_id, device_id, event, energized, "
-            "ts, seq, battery_mv, rssi, fw, received_at) VALUES "
-            "(:id,:pole_id,:device_id,:event,:energized,:ts,:seq,:battery_mv,:rssi,:fw,:received_at)",
-            restored_event
-        )
+            # boot event — real timestamp + offset to guarantee newer than any skewed fault event
+            boot_event = {
+                "id": str(uuid.uuid4()), "pole_id": pole_id, "device_id": device_id,
+                "event": "boot", "energized": True, "ts": now + random.uniform(10.0, 12.0),
+                "seq": seq, "battery_mv": random.randint(3400, 3700),
+                "rssi": random.randint(-100, -65), "fw": fw, "received_at": now,
+            }
+            cur.execute(
+                "INSERT INTO telemetry (id, pole_id, device_id, event, energized, "
+                "ts, seq, battery_mv, rssi, fw, received_at) VALUES "
+                "(:id,:pole_id,:device_id,:event,:energized,:ts,:seq,:battery_mv,:rssi,:fw,:received_at)",
+                boot_event
+            )
 
-        # Refresh last_seen to now so stale detection clears
-        cur.execute(
-            "INSERT OR REPLACE INTO device_last_seen (device_id, ts, pole_id) "
-            "VALUES (?, ?, ?)", (device_id, now + 15.0, pole_id)
-        )
-        messages_generated += 2
+            # power_restored event — slightly after boot
+            restored_event = {
+                "id": str(uuid.uuid4()), "pole_id": pole_id, "device_id": device_id,
+                "event": "power_restored", "energized": True,
+                "ts": now + random.uniform(13.0, 15.0),
+                "seq": seq + 1, "battery_mv": random.randint(3400, 3700),
+                "rssi": random.randint(-100, -65), "fw": fw, "received_at": now,
+            }
+            cur.execute(
+                "INSERT INTO telemetry (id, pole_id, device_id, event, energized, "
+                "ts, seq, battery_mv, rssi, fw, received_at) VALUES "
+                "(:id,:pole_id,:device_id,:event,:energized,:ts,:seq,:battery_mv,:rssi,:fw,:received_at)",
+                restored_event
+            )
+
+            # Refresh last_seen to now so stale detection clears
+            cur.execute(
+                "INSERT OR REPLACE INTO device_last_seen (device_id, ts, pole_id) "
+                "VALUES (?, ?, ?)", (device_id, now + 15.0, pole_id)
+            )
+            messages_generated += 2
 
     con.commit()
 
@@ -306,6 +317,7 @@ def inject_restore_telemetry(con: sqlite3.Connection, fault_type: str,
         "affected_pole_count": len(affected),
         "messages_generated": messages_generated,
     }
+
 
 
 def inject_noise_device_death(con: sqlite3.Connection,

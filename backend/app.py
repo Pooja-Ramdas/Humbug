@@ -21,6 +21,7 @@ import time
 import uuid
 import sqlite3
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
@@ -445,8 +446,129 @@ async def lifespan(app: FastAPI):
     init_runtime_tables(con)
     seed_heartbeats(con)
     con.close()
+
+    # ── Background heartbeat thread ──────────────────────────────────────────
+    # Real pole IoT devices send a heartbeat every ~15 min forever.
+    # This simulation has no ongoing telemetry stream, so without this thread
+    # every device's device_last_seen would age past STALE_THRESHOLD_S
+    # (currently 60s) exactly once — at startup+60s — flipping the entire fleet
+    # to fault simultaneously. That defeats the correlated-staleness safeguard
+    # (which requires >=2 peers stale at once to call it a line fault, not a
+    # dead modem), because when every device goes stale at the same instant the
+    # safeguard is trivially satisfied everywhere.
+    _hb_stop = threading.Event()
+
+    def heartbeat_refresh():
+        """
+        Update device_last_seen to now() for all devices that are healthy.
+
+        A device is excluded from refresh (kept stale) if:
+          (a) Its most-recent telemetry event is 'power_lost' — it actively
+              signalled it is dark. This covers fw>=1.3 devices during a fault.
+          (b) It is the device of a pole under an active, unrestored injected
+              fault — this covers fw-1.2 silent devices (which go stale but
+              never emit power_lost) and the 30%-lost dying-message cases.
+
+        Every other device is presumed healthy and gets ts=now, simulating
+        the continuous heartbeat a real IoT device sends every ~15 min.
+        """
+        try:
+            hb_con = get_db()
+            cur = hb_con.cursor()
+            now = time.time()
+            cutoff = now - 172800  # 48h — bound telemetry scan
+
+            # --- Exclusion group A: device's latest telemetry is power_lost ---
+            dark_by_telemetry = set(
+                r[0] for r in cur.execute(
+                    """
+                    SELECT t1.device_id
+                    FROM   telemetry t1
+                    INNER JOIN (
+                        SELECT device_id, MAX(ts) AS max_ts
+                        FROM   telemetry
+                        WHERE  ts >= ?
+                        GROUP  BY device_id
+                    ) t2 ON t1.device_id = t2.device_id AND t1.ts = t2.max_ts
+                    WHERE  t1.event = 'power_lost'
+                    """,
+                    (cutoff,)
+                ).fetchall()
+            )
+
+            # --- Exclusion group B: device belongs to a pole under an active fault ---
+            # This covers fw-1.2 silent and dying-message-lost cases where
+            # device_last_seen was backdated but power_lost was never written.
+            dark_by_fault = set()
+            try:
+                active_fault_rows = cur.execute(
+                    "SELECT fault_type, target_id FROM active_faults WHERE restored = 0"
+                ).fetchall()
+                for row in active_fault_rows:
+                    affected = sim.get_poles_for_target(
+                        hb_con, row["fault_type"], row["target_id"], _graph
+                    )
+                    for pole in affected:
+                        if pole.get("device_id"):
+                            dark_by_fault.add(pole["device_id"])
+            except sqlite3.OperationalError:
+                pass  # active_faults table may not exist in test DB
+
+            excluded = dark_by_telemetry | dark_by_fault
+
+            # --- Refresh all healthy devices ---
+            all_devices = cur.execute(
+                "SELECT device_id, pole_id FROM pole_registry "
+                "WHERE device_id IS NOT NULL"
+            ).fetchall()
+
+            refreshed = 0
+            for r in all_devices:
+                if r["device_id"] not in excluded:
+                    cur.execute(
+                        "INSERT OR REPLACE INTO device_last_seen "
+                        "(device_id, ts, pole_id) VALUES (?, ?, ?)",
+                        (r["device_id"], now, r["pole_id"])
+                    )
+                    refreshed += 1
+
+            hb_con.commit()
+            hb_con.close()
+            log.debug(
+                f"[heartbeat] refreshed={refreshed}, "
+                f"excluded={len(excluded)} "
+                f"(dark_telemetry={len(dark_by_telemetry)}, "
+                f"(dark_fault={len(dark_by_fault)})"
+            )
+        except Exception as exc:
+            log.warning(f"[heartbeat] refresh error: {exc}")
+
+    # Run at half the stale threshold so there's always headroom before devices age out.
+    # With STALE_THRESHOLD_S=60s this fires every 20s. With a production value of
+    # 30min it fires every 10min — lightweight either way.
+    from telemetry_sim import STALE_THRESHOLD_S as _STH
+    HEARTBEAT_INTERVAL_S = max(10, _STH // 3)
+    log.info(f"[heartbeat] Starting background refresh thread "
+             f"(interval={HEARTBEAT_INTERVAL_S}s, stale_threshold={_STH}s)")
+
+    def heartbeat_loop():
+        # Fire immediately once at startup (in addition to seed_heartbeats)
+        # so the first poll always sees fresh timestamps even if uvicorn
+        # takes a few seconds to load.
+        heartbeat_refresh()
+        while not _hb_stop.wait(HEARTBEAT_INTERVAL_S):
+            heartbeat_refresh()
+
+    _hb_thread = threading.Thread(target=heartbeat_loop, daemon=True, name="hb-refresh")
+    _hb_thread.start()
+
     yield
+
+    # Signal the heartbeat thread to stop and give it a moment to exit cleanly.
+    _hb_stop.set()
+    _hb_thread.join(timeout=5)
     log.info("Humbug backend shutting down")
+
 
 
 
@@ -497,6 +619,7 @@ class SimulateLoadShedBody(BaseModel):
     target_id: str
     scope: str
     duration_minutes: int
+    start_delay_minutes: Optional[int] = 0
 
 
 class SimulateNoiseBody(BaseModel):
@@ -535,20 +658,29 @@ def health():
 def stats():
     con = get_db()
     try:
-        pole_count = con.execute("SELECT COUNT(*) FROM pole_registry").fetchone()[0]
+        pole_count   = con.execute("SELECT COUNT(*) FROM pole_registry").fetchone()[0]
         open_tickets = con.execute(
-            "SELECT COUNT(*) FROM tickets WHERE status NOT IN ('verified','closed','detected') "
-            "OR status = 'detected'"
+            "SELECT COUNT(*) FROM tickets WHERE status NOT IN ('verified','closed')"
         ).fetchone()[0]
-        fault_poles = con.execute(
-            "SELECT COUNT(*) FROM tickets t WHERE t.status NOT IN ('verified','closed')"
-        ).fetchone()[0]
-        dt_count = con.execute("SELECT COUNT(*) FROM transformer_registry").fetchone()[0]
+        dt_count     = con.execute("SELECT COUNT(*) FROM transformer_registry").fetchone()[0]
         feeder_count = con.execute("SELECT COUNT(*) FROM feeders").fetchone()[0]
+
+        # Count poles actually in 'fault' status right now (derived, not from tickets).
+        # This is the number that matches the red dots on the map.
+        pole_rows = con.execute("SELECT pole_id, device_id FROM pole_registry").fetchall()
+        statuses = compute_pole_statuses(con, [(r["pole_id"], r["device_id"]) for r in pole_rows])
+        fault_pole_count    = sum(1 for s in statuses.values() if s == "fault")
+        load_shed_pole_count = sum(1 for s in statuses.values() if s == "load_shed")
+        device_fault_count  = sum(1 for s in statuses.values() if s == "device_fault")
+
         return {
-            "pole_count": pole_count, "dt_count": dt_count,
-            "feeder_count": feeder_count, "open_tickets": open_tickets,
-            "fault_poles": fault_poles,
+            "pole_count":         pole_count,
+            "dt_count":           dt_count,
+            "feeder_count":       feeder_count,
+            "open_tickets":       open_tickets,
+            "fault_pole_count":   fault_pole_count,    # red poles on map
+            "load_shed_pole_count": load_shed_pole_count,  # yellow poles
+            "device_fault_count": device_fault_count,  # grey (IoT issue) poles
         }
     finally:
         con.close()
@@ -652,14 +784,16 @@ def get_poles():
         statuses = compute_pole_statuses(con, [(r["pole_id"], r["device_id"]) for r in pole_rows])
 
         # Which DTs/feeders are in a scheduled outage right now?
+        # NOTE: pole-level load shedding is not physically meaningful — excluded.
         now = time.time()
         outage_targets = set()
         outages = cur.execute(
             "SELECT scope, target_id FROM scheduled_outages "
-            "WHERE start_ts <= ? AND end_ts >= ?", (now, now)
+            "WHERE start_ts <= ? AND end_ts >= ? AND scope IN ('feeder','dt')", (now, now)
         ).fetchall()
         for o in outages:
             outage_targets.add((o["scope"], o["target_id"]))
+
 
         # Device last seen for tooltip
         last_seen_map = {
@@ -678,13 +812,15 @@ def get_poles():
             pid = p["pole_id"]
             raw_status = statuses.get(pid, "unknown")
 
-            # Override: if pole is under a scheduled outage, show load_shed
+            # Override: if pole is under a feeder/DT scheduled outage, show load_shed.
+            # NOTE: pole-level load shedding does not exist in practice — load shedding
+            # is always feeder or DT level. detection.py already handles this correctly;
+            # this override is a belt-and-suspenders guard for direct DB queries.
             final_status = raw_status
-            if raw_status in ("fault", "load_shed"):
-                dt_id = p["dt_id"]
-                feeder_id = p["feeder_id"]
-                if ("feeder", feeder_id) in outage_targets or ("dt", dt_id) in outage_targets or ("pole", pid) in outage_targets:
-                    final_status = "load_shed"
+            dt_id = p["dt_id"]
+            feeder_id = p["feeder_id"]
+            if (("feeder", feeder_id) in outage_targets or ("dt", dt_id) in outage_targets):
+                final_status = "load_shed"
 
             device_id = p["device_id"]
             last_seen = last_seen_map.get(device_id) if device_id else None
@@ -725,6 +861,43 @@ def get_pole(pole_id: str):
         d = dict(row)
         d["status"] = statuses.get(pole_id, "unknown")
         return d
+    finally:
+        con.close()
+
+
+@app.get("/network/topology")
+def get_network_topology():
+    """
+    Static topology data — pole positions, DT/feeder/pincode/ward/device
+    attributes. This NEVER changes at runtime. Load once on page init and
+    cache client-side; do NOT poll this endpoint.
+    """
+    con = get_db()
+    try:
+        poles = con.execute(
+            "SELECT pole_id, lat, lon, feeder_id, dt_id, seq_on_line, "
+            "parent_pole_id, pole_type, ward, pincode, device_id "
+            "FROM pole_registry"
+        ).fetchall()
+        return [dict(r) for r in poles]
+    finally:
+        con.close()
+
+
+@app.get("/network/status")
+def get_network_status():
+    """
+    Lightweight status-only response: {pole_id: status} for all poles.
+    This is the ONLY endpoint that should be polled frequently (every 3s).
+    The frontend can update just marker colors without recreating any DOM nodes.
+    """
+    con = get_db()
+    try:
+        pole_rows = con.execute(
+            "SELECT pole_id, device_id FROM pole_registry"
+        ).fetchall()
+        statuses = compute_pole_statuses(con, [(r["pole_id"], r["device_id"]) for r in pole_rows])
+        return statuses
     finally:
         con.close()
 
@@ -1027,36 +1200,42 @@ def get_active_faults():
 
 @app.post("/api/simulate-load-shed")
 def simulate_load_shed(body: SimulateLoadShedBody):
+    """
+    Schedule a load-shedding outage window.
+
+    IMPORTANT: We do NOT backdate device_last_seen here.
+    Load shedding is a *planned, controlled* outage — the utility knows about it
+    in advance. The detection logic derives load_shed status by checking the
+    scheduled_outages table, NOT from telemetry staleness. Backdating last_seen
+    would make the corroboration pass in compute_pole_statuses() treat siblings
+    as 'fault', which is exactly the bug that caused upstream poles to turn red.
+
+    Real-world: a feeder breaker opens, power stops flowing downstream of that
+    point. Upstream poles (closer to substation) are unaffected — they are still
+    energized. Only the poles that are *downstream of / under* the target
+    (feeder, DT, or span) lose power, and they were expected to lose it.
+    """
     con = get_db()
     try:
         outage_id = f"SO-SIM-{uuid.uuid4().hex[:8]}"
         now = time.time()
-        start_ts = now
-        end_ts = now + body.duration_minutes * 60
-        
+        start_delay = body.start_delay_minutes or 0
+        start_ts = now + start_delay * 60
+        end_ts = start_ts + body.duration_minutes * 60
+
         con.execute(
             "INSERT INTO scheduled_outages (id, scope, target_id, start_ts, end_ts, status, reason) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (outage_id, body.scope, body.target_id, start_ts, end_ts, "active", f"Load shedding ({body.duration_minutes} mins)")
+            (outage_id, body.scope, body.target_id, start_ts, end_ts, "active",
+             f"Load shedding ({body.duration_minutes} mins)")
         )
-        
-        # Backdate affected devices so they appear dark
-        affected = sim.get_poles_for_target(con, body.scope, body.target_id, _graph)
-        stale_ts = now - sim.STALE_THRESHOLD_S - 10
-        for pole in affected:
-            d_id = pole.get("device_id")
-            p_id = pole.get("pole_id")
-            if d_id:
-                con.execute(
-                    "INSERT INTO device_last_seen (device_id, ts, pole_id) VALUES (?, ?, ?) "
-                    "ON CONFLICT(device_id) DO UPDATE SET ts=?",
-                    (d_id, stale_ts, p_id, stale_ts)
-                )
         con.commit()
-        
+
+        # Run detection so the map immediately reflects the yellow load_shed status
+        # (detection reads scheduled_outages — no telemetry manipulation needed)
         run_full_detection(con)
         con.commit()
-        
+
         return {"id": outage_id, "status": "active", "end_ts": end_ts}
     finally:
         con.close()

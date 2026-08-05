@@ -104,14 +104,22 @@ def get_poles_for_target(con: sqlite3.Connection, fault_type: str,
 
     elif fault_type in ("span", "pole"):
         # target_id is a pole_id; we darken that pole and everything downstream of it.
-        # Use graph topology if available, otherwise fall back to DT-level.
         if graph is not None:
             import networkx as nx
             if target_id in graph:
-                downstream = nx.descendants(graph, target_id)
+                downstream = set(nx.descendants(graph, target_id))
                 downstream.add(target_id)
-                pole_ids = [n for n in downstream
-                            if graph.nodes[n].get("type") == "pole"]
+
+                target_node = graph.nodes[target_id]
+                dt_id = target_node.get("dt_id")
+                target_seq = target_node.get("seq_on_line")
+                if dt_id and target_seq is not None:
+                    for n, d in graph.nodes(data=True):
+                        if d.get("type") == "pole" and d.get("dt_id") == dt_id and d.get("seq_on_line") is not None:
+                            if d["seq_on_line"] >= target_seq:
+                                downstream.add(n)
+
+                pole_ids = [n for n in downstream if graph.nodes[n].get("type") == "pole"]
                 if pole_ids:
                     placeholders = ",".join("?" * len(pole_ids))
                     rows = cur.execute(

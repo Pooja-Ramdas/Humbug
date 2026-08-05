@@ -21,9 +21,10 @@ else
   echo "[entrypoint] Using existing database at $DB_PATH"
 fi
 
-echo "[entrypoint] Starting Humbug backend on :8000"
+PORT="${PORT:-8000}"
+echo "[entrypoint] Starting Humbug backend on :$PORT"
 exec uvicorn backend.app:app \
   --host 0.0.0.0 \
-  --port 8000 \
+  --port "$PORT" \
   --workers 1 \
   --log-level info

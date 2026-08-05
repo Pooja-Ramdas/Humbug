@@ -587,11 +587,15 @@ def find_frontend_dir() -> Path:
         Path(__file__).resolve().parent / "frontend",
         Path.cwd() / "frontend",
         Path("/app/frontend"),
+        Path("/opt/render/project/src/frontend"),
     ]
     for c in candidates:
         if c.exists() and (c / "index.html").exists():
+            log.info(f"Resolved FRONTEND_DIR to: {c}")
             return c
-    return Path(__file__).resolve().parent.parent / "frontend"
+    fallback = Path(__file__).resolve().parent.parent / "frontend"
+    log.warning(f"Could not locate frontend with index.html. Falling back to: {fallback}")
+    return fallback
 
 FRONTEND_DIR = find_frontend_dir()
 
@@ -611,9 +615,14 @@ if (FRONTEND_DIR / "public").exists():
 @app.get("/")
 @app.get("/index.html")
 async def index():
-    if (FRONTEND_DIR / "index.html").exists():
-        return FileResponse(str(FRONTEND_DIR / "index.html"))
-    return {"status": "Humbug backend is running"}
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return {
+        "status": "Humbug backend is running",
+        "frontend_dir": str(FRONTEND_DIR),
+        "index_exists": index_path.exists()
+    }
 
 
 app.add_middleware(

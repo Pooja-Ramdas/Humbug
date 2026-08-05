@@ -581,8 +581,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Humbug", version="1.0.0", lifespan=lifespan)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-FRONTEND_DIR = BASE_DIR / "frontend"
+def find_frontend_dir() -> Path:
+    candidates = [
+        Path(__file__).resolve().parent.parent / "frontend",
+        Path(__file__).resolve().parent / "frontend",
+        Path.cwd() / "frontend",
+        Path("/app/frontend"),
+    ]
+    for c in candidates:
+        if c.exists() and (c / "index.html").exists():
+            return c
+    return Path(__file__).resolve().parent.parent / "frontend"
+
+FRONTEND_DIR = find_frontend_dir()
 
 if (FRONTEND_DIR / "css").exists():
     app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
@@ -598,9 +609,10 @@ if (FRONTEND_DIR / "public").exists():
 
 
 @app.get("/")
+@app.get("/index.html")
 async def index():
     if (FRONTEND_DIR / "index.html").exists():
-        return FileResponse(FRONTEND_DIR / "index.html")
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
     return {"status": "Humbug backend is running"}
 
 

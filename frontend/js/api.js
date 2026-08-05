@@ -10,12 +10,15 @@
  */
 
 const API_BASE = window.HUMBUG_API_BASE || (() => {
-  if (window.location.protocol === 'file:') return 'http://localhost:8000';
+  url = 'https://humbug.onrender.com';
+  // local_url 
+  // url = 'http://localhost:8000';
+  if (window.location.protocol === 'file:') return url;
   // If served via Nginx proxy (e.g. port 80 or standard reverse proxy setup)
   if (window.location.port === '' || window.location.port === '80' || window.location.port === '443') {
     return window.location.origin + '/api';
   }
-  return 'http://localhost:8000';
+  return url;
 })();
 
 // ─── Internal fetch wrapper ───────────────────────────────────────────────
